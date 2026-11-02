@@ -1,16 +1,26 @@
 # jankara-data
 
-カラオケナビが使う店舗データ（6 チェーンの名前・住所・座標）を公開するリポジトリです。
+カラオケナビが使う店舗と料金のデータを公開するリポジトリです。
+GitHub Actions が毎日 04:10（日本時間）に各チェーンの公式サイトから作ります。
 
-GitHub Actions が毎日 04:10（日本時間）に各チェーンの公式サイトから `chains.json` を作ります。
-料金は含みません。
+## アプリへ配るもの（`dist/`）
 
-https://raw.githubusercontent.com/aiking-01/jankara-data/main/chains.json
+| ファイル | 内容 |
+|---|---|
+| `manifest.json` | 各ファイルの sha256、大きさ、店の数、確認日時 |
+| `chains.json.xz` | 6 チェーンの店舗（名前・住所・座標） |
+| `prices.json.xz` | ジャンカラの料金 |
+| `bigecho.json.xz` | ビッグエコーの金額（変換できた店だけ） |
+| `maneki.json.xz` | まねきねこの金額（変換できた店だけ） |
 
-生成スクリプトは `scripts/update.py` です。手元で動かす場合:
+通信量を抑えるため、アプリは毎日 `manifest.json` だけを読み、sha256 が変わったファイルだけをダウンロードします。
+確認日時は `manifest.json` にあり、確認できなかった店にだけ店ごとの `checked_at` が残ります。
 
-```bash
-python -m pip install -r requirements.txt
-python -m unittest discover -s tests -p "test_*.py"
-python scripts/update.py chains
-```
+料金は参考情報です。正しい料金は各チェーンの公式サイトで確認してください。
+
+## 作り方
+
+- `chains.json` と `source/` は公式サイトから読んだ元データです。確認日時だけの変更はコミットしません。
+- `scripts/convert.mjs` が料金表を金額へ変換し、読めない表は配りません。
+- `scripts/publish.py` が xz で圧縮して `dist/` に置きます。店の数が 1 割以上減ったファイルは前回のものを残します。
+- `scripts/web/bigecho.js` はアプリ本体と同じものです。変更するときは両方を直します。

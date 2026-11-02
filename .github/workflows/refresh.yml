@@ -40,28 +40,52 @@ jobs:
       - name: Test parsers
         run: python -m unittest discover -s tests -p "test_*.py" -v
 
-      - name: Update shop JSON
-        id: refresh
+      - name: Update shops
+        id: chains
         continue-on-error: true
         run: python scripts/update.py chains
+
+      - name: Update Jankara prices
+        id: jankara
+        continue-on-error: true
+        run: python scripts/update_prices.py
+
+      - name: Update Big Echo prices
+        id: bigecho
+        continue-on-error: true
+        run: python scripts/update_chain_prices.py
+
+      - name: Update Maneki prices
+        id: maneki
+        continue-on-error: true
+        run: python scripts/update_maneki_prices.py
+
+      - name: Convert prices to amounts
+        run: node scripts/convert.mjs
+
+      - name: Build compressed files
+        id: publish
+        continue-on-error: true
+        run: python scripts/publish.py
 
       - name: Commit data
         shell: bash
         run: |
           set -euo pipefail
-          git add chains.json
+          python scripts/select_changes.py
+          git add chains.json source dist
           if git diff --cached --quiet; then
             echo "No data changes"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "data: refresh shops"
+          git commit -m "data: refresh"
           git pull --rebase origin main
           git push origin HEAD:main
 
-      - name: Fail run when a source refresh failed
-        if: steps.refresh.outcome == 'failure'
+      - name: Fail run when a step failed
+        if: steps.chains.outcome == 'failure' || steps.jankara.outcome == 'failure' || steps.bigecho.outcome == 'failure' || steps.maneki.outcome == 'failure' || steps.publish.outcome == 'failure'
         run: |
-          echo "::error::Some data sources failed; see logs. Existing JSON was preserved where possible."
+          echo "::error::Some data sources failed; see logs. Existing data was preserved where possible."
           exit 1

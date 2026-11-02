@@ -2,3 +2,5 @@
 __pycache__/
 *.tmp
 .venv/
+prices.csv
+build/
