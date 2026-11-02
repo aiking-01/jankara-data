@@ -29,11 +29,11 @@ class CompactTest(unittest.TestCase):
 
     def test_dict_shops_keep_their_shape(self):
         result = publish.compact({"updated_at": 5, "shops": {"a": {"checked_at": 5, "regular": []}}})
-        self.assertEqual(result, {"shops": {"a": {"regular": []}}})
+        self.assertEqual(result, {"schema_version": 1, "shops": {"a": {"regular": []}}})
 
     def test_encoded_file_is_xz_json_without_clock(self):
         decoded = json.loads(lzma.decompress(publish.encode(publish.compact(document(1)))))
-        self.assertEqual(set(decoded), {"shops"})
+        self.assertEqual(set(decoded), {"schema_version", "shops"})
 
 
 class PublishFileTest(unittest.TestCase):

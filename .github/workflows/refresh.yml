@@ -63,6 +63,9 @@ jobs:
       - name: Convert prices to amounts
         run: node scripts/convert.mjs
 
+      - name: Check amounts
+        run: node --test tests/amounts.test.mjs
+
       - name: Build compressed files
         id: publish
         continue-on-error: true

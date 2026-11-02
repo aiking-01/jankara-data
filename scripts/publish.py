@@ -14,7 +14,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / "dist"
-SCHEMA_VERSION = 2
+MANIFEST_VERSION = 2
+SHOPS_VERSION = 1
 SOURCES = {
     "chains": ROOT / "chains.json",
     "prices": ROOT / "source" / "prices.json",
@@ -24,7 +25,8 @@ SOURCES = {
 # 前回よりこの割合を下回ったら、取得か変換の異常とみなして前回のファイルを残す
 MIN_RATIO = 0.9
 # この回の巡回で確かめた店とみなす幅。確認できなかった店にだけ checked_at を残す
-RUN_SECONDS = 6 * 3600
+# 取得スクリプトが 20 時間以内の店を飛ばすので、それより長くする
+RUN_SECONDS = 21 * 3600
 COORD_DIGITS = 5  # 約 1m。距離の計算にはこれで足りる
 # 辞書を小さくしておくと、スマホが展開するときのメモリも辞書の大きさで済む
 XZ_FILTERS = [{"id": lzma.FILTER_LZMA2, "preset": 9 | lzma.PRESET_EXTREME, "dict_size": 1 << 21,
@@ -44,12 +46,15 @@ def compact_shop(shop: dict, updated_at: int) -> dict:
 def compact(document: dict) -> dict:
     updated_at, shops = document["updated_at"], document["shops"]
     if isinstance(shops, dict):
-        return {"shops": {key: compact_shop(shop, updated_at) for key, shop in shops.items()}}
-    return {"shops": [compact_shop(shop, updated_at) for shop in shops]}
+        compacted = {key: compact_shop(shop, updated_at) for key, shop in shops.items()}
+    else:
+        compacted = [compact_shop(shop, updated_at) for shop in shops]
+    return {"schema_version": SHOPS_VERSION, "shops": compacted}
 
 
 def encode(document: dict) -> bytes:
-    text = json.dumps(document, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    # key の順序を変えると、アプリが公式の表と比べるときに料金が変わったと誤認する
+    text = json.dumps(document, ensure_ascii=False, separators=(",", ":"))
     return lzma.compress(text.encode("utf-8"), format=lzma.FORMAT_XZ, check=lzma.CHECK_CRC32, filters=XZ_FILTERS)
 
 
@@ -75,7 +80,7 @@ def main() -> int:
         document = json.loads(source.read_text(encoding="utf-8"))
         files[name], ok = publish_file(name, document, old.get(name))
         published = published and ok
-    manifest = {"schema_version": SCHEMA_VERSION, "files": files}
+    manifest = {"schema_version": MANIFEST_VERSION, "files": files}
     path.write_text(json.dumps(manifest, separators=(",", ":"), sort_keys=True), encoding="utf-8", newline="")
     return 0 if published else 1
 
