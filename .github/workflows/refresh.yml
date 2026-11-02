@@ -1,0 +1,67 @@
+name: Refresh shop data
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Daily 04:10 JST (previous day 19:10 UTC)
+    - cron: '10 19 * * *'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/refresh.yml'
+      - 'scripts/**'
+      - 'tests/**'
+      - 'requirements.txt'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: jankara-json-refresh
+  cancel-in-progress: true
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Test parsers
+        run: python -m unittest discover -s tests -p "test_*.py" -v
+
+      - name: Update shop JSON
+        id: refresh
+        continue-on-error: true
+        run: python scripts/update.py chains
+
+      - name: Commit data
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add chains.json
+          if git diff --cached --quiet; then
+            echo "No data changes"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "data: refresh shops"
+          git pull --rebase origin main
+          git push origin HEAD:main
+
+      - name: Fail run when a source refresh failed
+        if: steps.refresh.outcome == 'failure'
+        run: |
+          echo "::error::Some data sources failed; see logs. Existing JSON was preserved where possible."
+          exit 1
