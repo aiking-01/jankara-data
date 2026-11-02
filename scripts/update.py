@@ -31,6 +31,19 @@ MANEKI_PATTERN = re.compile(r"https://www\.karaokemanekineko\.jp/locations/[a-z0
 JOYSOUND_SITEMAP = "https://shop.joysound.com/shop-sitemap.xml"
 JOYSOUND_ENTRY = re.compile(r"<loc>(https://shop\.joysound\.com/shop/joysound-[^<]+)</loc>\s*<lastmod>([^<]+)</lastmod>")
 COTE_BASE = "https://www.cotedazur.jp"
+BANBAN_BASE = "https://karaoke-shin.jp"
+BANBAN_LINK = re.compile(r'href="(https://karaoke-shin\.jp/shop-list/\d+\.html)">カラオケBanBan')
+JOYJOY_BASE = "https://www.joyjoy.co.jp"
+JOYJOY_LINK = re.compile(r"/store/view/([A-Za-z0-9_-]+)")
+JOYJOY_POSTAL = {
+    "長野県": ("38", "39"), "山梨県": ("40",), "静岡県": ("41", "42", "43"),
+    "愛知県": ("44", "45", "46", "47", "48", "49"), "岐阜県": ("50",), "三重県": ("51",), "滋賀県": ("52",),
+    "大阪府": ("53", "54", "55", "56", "57", "58", "59"), "福井県": ("91",), "石川県": ("92",), "富山県": ("93",),
+}
+CLUBDAM_LIST = "https://karaokeclub.jp/shop/"
+CLUBDAM_LINK = re.compile(r'<h3><a href="(https://karaokeclub\.jp/shop/[^"#]+)"')
+UTAHIROBA_BASE = "https://www.utahiro.com"
+UTAHIROBA_LINK = re.compile(r'href="(/shops/st_[a-z0-9_-]+/\d+)"')
 COTE_ENTRY = re.compile(
     r'<entry>\s*<name>([^<]+)</name>\s*<position lat="([\d.]+)" lng="([\d.]+)"\s*/>\s*'
     r"<address>([^<]*)</address>\s*<page>(/branch/detail/(\d+)\.html)</page>"
@@ -609,6 +622,137 @@ def round1_shops(session, previous, delay):
                    allow_unlisted=True, pacer=pacer)
 
 
+def parse_banban(url, markup):
+    name = re.search(r"<title>\s*カラオケBanBan\s*([^|<]+)", markup)
+    coords = re.search(r"center=(\d{2}\.\d+),(1\d{2}\.\d+)", markup)
+    address = re.search(r"〒\d{3}-\d{4}\s*(?:<br\s*/?>)?\s*([^<]+)", markup)
+    hours = re.search(r"営業時間[:：]\s*(?:<[^>]+>\s*)*([^<]{3,40})", markup)
+    if not all((name, coords, address)):
+        return None
+    number = url.rsplit("/", 1)[1].removesuffix(".html")
+    return shop_data("BanBan", f"bb-{number}", name.group(1), address.group(1),
+                     coords.group(1), coords.group(2), url, hours.group(1) if hours else "")
+
+
+def banban_shops(session, previous, delay):
+    """The area pages also list sister brands such as カラオケALL; keep BanBan only."""
+    pacer = RequestPacer(delay)
+    urls = []
+    for area in range(1, 48):
+        pacer.wait()
+        resp = request(session, f"{BANBAN_BASE}/shop-area/{area:02d}.html")
+        if resp.status_code == 404:
+            continue
+        resp.raise_for_status()
+        urls.extend(BANBAN_LINK.findall(resp.text))
+    if not urls:
+        raise ValueError("BanBan area pages contained no store links")
+    # A few pages have no map; those shops cannot be placed and are left out
+    return details(urls, parse_banban, previous, session, delay, allow_unlisted=True, pacer=pacer)
+
+
+def joyjoy_prefecture(postal):
+    for prefecture, prefixes in JOYJOY_POSTAL.items():
+        if postal[:2] in prefixes:
+            return prefecture
+    return None
+
+
+def parse_joyjoy(url, markup):
+    """Some addresses omit the prefecture, so it comes from the postal code."""
+    name = re.search(r"<h2[^>]*>\s*([^<]+?)\s*<span>", markup)
+    lat = re.search(r"!3d(\d{2}\.\d+)", markup)
+    lng = re.search(r"!2d(1\d{2}\.\d+)", markup)
+    address = re.search(r"ADDRESS.*?<td>\s*(?:〒(\d{3})-\d{4}\s*)?([^<]+)", markup, re.S)
+    if not all((name, lat, lng, address)):
+        return None
+    text = normalize(address.group(2))
+    if not PREFECTURE.match(text):
+        prefecture = joyjoy_prefecture(address.group(1) or "")
+        if not prefecture:
+            return None
+        text = prefecture + text
+    slug = url.rsplit("/", 1)[1]
+    return shop_data("JOYJOY", f"jj-{slug}", name.group(1), text, lat.group(1), lng.group(1), url)
+
+
+def joyjoy_shops(session, previous, delay):
+    pacer = RequestPacer(delay)
+    pacer.wait()
+    top = request(session, f"{JOYJOY_BASE}/")
+    top.raise_for_status()
+    slugs = {}
+    for area in dict.fromkeys(re.findall(r'href="/store/index/(\d+)"', top.text)):
+        pacer.wait()
+        resp = request(session, f"{JOYJOY_BASE}/store/index/{area}")
+        resp.raise_for_status()
+        slugs.update(dict.fromkeys(JOYJOY_LINK.findall(resp.text)))
+    if not slugs:
+        raise ValueError("JOYJOY area pages contained no store links")
+    shops = details([f"{JOYJOY_BASE}/store/view/{slug}" for slug in slugs], parse_joyjoy,
+                    previous, session, delay, allow_unlisted=True, pacer=pacer)
+    # The same page is linked under more than one spelling of its slug
+    return list({shop["address"]: shop for shop in reversed(shops)}.values())[::-1]
+
+
+def parse_clubdam(url, markup):
+    title = re.search(r"<title>[^<]*?&nbsp;\s*([^<]+)", markup)
+    coords = re.search(r"[?&;]ll=(\d{2}\.\d+),(1\d{2}\.\d+)", markup)
+    latlng = coords.groups() if coords else None
+    embed = re.search(r"!2d(1\d{2}\.\d+)!3d(\d{2}\.\d+)", markup)
+    if embed and not latlng:
+        latlng = embed.group(2), embed.group(1)
+    address = re.search(r"住所：</dt>\s*<dd>\s*(?:〒[\d-]+)?(?:&nbsp;)?\s*([^<]+)", markup)
+    if not all((title, latlng, address)):
+        return None
+    name = unicodedata.normalize("NFKC", html_lib.unescape(title.group(1)))
+    name = re.sub(r"^カラオケ\s*CLUB\s*DAM\s*", "", name)
+    name = re.sub(r"\s*(?:\(セルフカラオケ\)|【[^】]*】)", "", name).strip()
+    return shop_data("CLUB DAM", f"dam-{name}", name, address.group(1),
+                     latlng[0], latlng[1], url)
+
+
+def clubdam_shops(session, previous, delay):
+    time.sleep(delay)
+    resp = request(session, CLUBDAM_LIST)
+    resp.raise_for_status()
+    urls = CLUBDAM_LINK.findall(resp.text)
+    if not urls:
+        raise ValueError("CLUB DAM shop list contained no store links")
+    return details(urls, parse_clubdam, previous, session, delay)
+
+
+def parse_utahiroba(url, markup):
+    name = re.search(r"<title>\s*([^｜|<]+)", markup)
+    lat = re.search(r"!3d(\d{2}\.\d+)", markup)
+    lng = re.search(r"!2d(1\d{2}\.\d+)", markup)
+    address = re.search(r">住所</div>\s*</div>\s*<div[^>]*>\s*<div[^>]*>\s*([^<]+)", markup)
+    hours = re.search(r">営業時間</div>\s*</div>\s*<div[^>]*>\s*<div[^>]*>\s*([^<]{3,60})", markup)
+    if not all((name, lat, lng, address)):
+        return None
+    return shop_data("歌広場", "uh-" + url.rsplit("/", 1)[1], name.group(1), address.group(1),
+                     lat.group(1), lng.group(1), url, hours.group(1) if hours else "")
+
+
+def utahiroba_shops(session, previous, delay):
+    pacer = RequestPacer(delay)
+    paths = {}
+    for page in range(1, 40):  # bound pagination on a broken site
+        pacer.wait()
+        resp = request(session, f"{UTAHIROBA_BASE}/shops/search?ible-categoryselectbox1=&page={page}")
+        if resp.status_code == 404 and paths:  # past the last page
+            break
+        resp.raise_for_status()
+        found = dict.fromkeys(UTAHIROBA_LINK.findall(resp.text))
+        if not found.keys() - paths.keys():
+            break
+        paths.update(found)
+    if not paths:
+        raise ValueError("Utahiroba search pages contained no store links")
+    return details([UTAHIROBA_BASE + path for path in paths], parse_utahiroba, previous,
+                   session, delay, pacer=pacer)
+
+
 def update_chains(delay=DELAY):
     old_doc = read_json(DATA / "chains.json", {"updated_at": 0, "shops": []})
     old = old_doc["shops"]
@@ -616,7 +760,8 @@ def update_chains(delay=DELAY):
     results = []
     failures = []
     chains = ("ビッグエコー", "カラオケ館", "まねきねこ",
-              "JOYSOUND", "コート・ダジュール", "ROUND1")
+              "JOYSOUND", "コート・ダジュール", "ROUND1",
+              "BanBan", "JOYJOY", "CLUB DAM", "歌広場")
     for chain in chains:
         previous = [s for s in old if s["chain"] == chain]
         try:
@@ -638,6 +783,14 @@ def update_chains(delay=DELAY):
                 current = cotedazur_shops(session, delay)
             elif chain == "ROUND1":
                 current = round1_shops(session, previous, delay)
+            elif chain == "BanBan":
+                current = banban_shops(session, previous, delay)
+            elif chain == "JOYJOY":
+                current = joyjoy_shops(session, previous, delay)
+            elif chain == "CLUB DAM":
+                current = clubdam_shops(session, previous, delay)
+            elif chain == "歌広場":
+                current = utahiroba_shops(session, previous, delay)
             else:
                 raise AssertionError(f"Unsupported chain {chain}")
             if not current or len(current) < 0.8 * len(previous):

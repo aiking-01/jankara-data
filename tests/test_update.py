@@ -1,5 +1,6 @@
 """Offline parser and safety tests for the standalone data collector."""
 import importlib.util
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -217,6 +218,65 @@ class ParsingTests(unittest.TestCase):
                         [], object(), 0.2, allow_unlisted=True,
                     )
         self.assertEqual(len(shops), 11)
+
+    def test_banban_page(self):
+        url = "https://karaoke-shin.jp/shop-list/00123.html"
+        markup = """<title> カラオケBanBan 八雲店 | 店舗</title>
+            <iframe src="https://maps?center=42.25,140.26"></iframe>
+            〒049-3100<br />北海道二海郡八雲町富士見町47-1<br>営業時間：<b>10:00～翌2:00</b>"""
+        shop = module.parse_banban(url, markup)
+        self.assertEqual(shop["id"], "bb-00123")
+        self.assertEqual(shop["name"], "八雲店")
+        self.assertEqual(shop["prefecture"], "北海道")
+        self.assertEqual(shop["hours"], "10:00～翌2:00")
+        self.assertIsNone(module.parse_banban(url, markup.replace("center=", "x=")))
+
+    def test_joyjoy_prefecture_comes_from_address_or_postal_code(self):
+        url = "https://www.joyjoy.co.jp/store/view/sample"
+        page = """<h2 class="t">%s<span>x</span></h2>!2d136.9!3d35.1
+            <th>ADDRESS <small>住所</small></th>
+            <td>%s　<a href="#">MAP</a></td>"""
+        shop = module.parse_joyjoy(url, page % ("名駅店", "〒467-0066 名古屋市瑞穂区洲山町1-1"))
+        self.assertEqual(shop["prefecture"], "愛知県")
+        self.assertTrue(shop["address"].startswith("愛知県名古屋市"))
+        shop = module.parse_joyjoy(url, page % ("可児店", "岐阜県可児市川合2607-26"))
+        self.assertEqual(shop["address"], "岐阜県可児市川合2607-26")
+        self.assertIsNone(module.parse_joyjoy(url, page % ("不明店", "どこか1-1")))
+
+    def test_club_dam_reads_title_and_either_map_form(self):
+        url = "https://karaokeclub.jp/shop/x/"
+        page = """<title>カラオケＣＬＵＢ ＤＡＭ &nbsp; カラオケＣＬＵＢ ＤＡＭ宇部店【禁煙】</title>
+            %s<dt>住所：</dt><dd>〒755-0042&nbsp;山口県宇部市松島町15-8</dd>"""
+        for maps in ("?ll=33.95,131.24&z=1", "embed?pb=!1d66!2d131.24!3d33.95!3m2"):
+            shop = module.parse_clubdam(url, page % maps)
+            self.assertEqual(shop["name"], "宇部店")
+            self.assertEqual((shop["lat"], shop["lng"]), (33.95, 131.24))
+        self.assertIsNone(module.parse_clubdam(url, page % ""))
+
+    def test_utahiroba_page(self):
+        url = "https://www.utahiro.com/shops/detail/1"
+        markup = """<title> 新宿三丁目店｜歌広場</title>!2d139.7!3d35.6
+            <div>住所</div></div><div><div>東京都新宿区新宿3-1-1</div>
+            <div>営業時間</div></div><div><div>11:00～翌5:00</div>"""
+        shop = module.parse_utahiroba(url, markup)
+        self.assertEqual(shop["name"], "新宿三丁目店")
+        self.assertEqual(shop["hours"], "11:00～翌5:00")
+        self.assertEqual(shop["prefecture"], "東京都")
+
+    def test_utahiroba_stops_at_the_404_after_the_last_page(self):
+        class Page:
+            def __init__(self, status_code, text=""):
+                self.status_code, self.text = status_code, text
+
+            def raise_for_status(self):
+                if self.status_code >= 400:
+                    raise AssertionError("must not raise for the page past the end")
+
+        pages = [Page(200, '<a href="/shops/detail/1">'), Page(404)]
+        link = re.compile(r'href="(/shops/detail/\d+)"')
+        with mock.patch.object(module, "request", side_effect=pages),                 mock.patch.object(module, "RequestPacer"),                 mock.patch.object(module, "UTAHIROBA_LINK", link),                 mock.patch.object(module, "details", side_effect=lambda urls, *a, **k: urls):
+            self.assertEqual(module.utahiroba_shops(object(), [], 0),
+                             [module.UTAHIROBA_BASE + "/shops/detail/1"])
 
 
 if __name__ == "__main__":
