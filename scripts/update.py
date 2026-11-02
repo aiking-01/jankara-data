@@ -663,12 +663,13 @@ def parse_joyjoy(url, markup):
     name = re.search(r"<h2[^>]*>\s*([^<]+?)\s*<span>", markup)
     lat = re.search(r"!3d(\d{2}\.\d+)", markup)
     lng = re.search(r"!2d(1\d{2}\.\d+)", markup)
-    address = re.search(r"ADDRESS.*?<td>\s*(?:〒(\d{3})-\d{4}\s*)?([^<]+)", markup, re.S)
+    address = re.search(r"ADDRESS.*?<td>\s*(?:（新）\s*)?(?:〒?(\d{3})-\d{4}\s*)?([^<]+)", markup, re.S)
     if not all((name, lat, lng, address)):
         return None
-    text = normalize(address.group(2))
+    # Moved addresses read "（新）〒... new （旧）〒... old"
+    text = normalize(address.group(2).split("（旧）")[0])
     if not PREFECTURE.match(text):
-        prefecture = joyjoy_prefecture(address.group(1) or "")
+        prefecture = "愛知県" if text.startswith("名古屋市") else joyjoy_prefecture(address.group(1) or "")
         if not prefecture:
             return None
         text = prefecture + text

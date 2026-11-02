@@ -242,6 +242,13 @@ class ParsingTests(unittest.TestCase):
         shop = module.parse_joyjoy(url, page % ("可児店", "岐阜県可児市川合2607-26"))
         self.assertEqual(shop["address"], "岐阜県可児市川合2607-26")
         self.assertIsNone(module.parse_joyjoy(url, page % ("不明店", "どこか1-1")))
+        shop = module.parse_joyjoy(url, page % ("笹島店", "名古屋市中村区名駅4丁目27-7"))
+        self.assertEqual(shop["address"], "愛知県名古屋市中村区名駅4丁目27-7")
+        shop = module.parse_joyjoy(url, page % ("上田店", "386-0018 長野県上田市常田3丁目5番35"))
+        self.assertEqual(shop["address"], "長野県上田市常田3丁目5番35")
+        moved = "（新）〒430-0906 静岡県浜松市中央区住吉4-14-5　　（旧）〒430-0906 静岡県浜松市中区住吉4-14-5"
+        shop = module.parse_joyjoy(url, page % ("住吉店", moved))
+        self.assertEqual(shop["address"], "静岡県浜松市中央区住吉4-14-5")
 
     def test_club_dam_reads_title_and_either_map_form(self):
         url = "https://karaokeclub.jp/shop/x/"
