@@ -13,7 +13,7 @@ import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import quote, unquote, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -55,6 +55,19 @@ ROUND1_ERROR = "ご指定のページは見つかりませんでした"
 SPECIAL = re.compile(r"特別料金|年末年始|お盆|GW|ゴールデンウィーク|繁忙|特定日")
 PREFECTURE = re.compile(r"^(北海道|東京都|大阪府|京都府|.{2,3}県)")
 B_ECHO_HOSTS = {"big-echo.jp", "shop.big-echo.jp"}
+# 店ごとの公式の予約ページ。まねきねこは公式アプリが入っていればアプリの予約画面が開く
+RESERVE = {
+    "まねきねこ": re.compile(r"https://reservation\.karaokemanekineko\.jp/\?storeId=\d+"),
+    "カラオケ館": re.compile(r"https://liff\.line\.me/[\w-]+/book/oa/@[\w-]+/"),
+    "ビッグエコー": re.compile(r"https://big-echo\.tottokun\.com/ownedmedia/ownedmedia_immediately_be/\w+"),
+    "JOYSOUND": re.compile(r"https://reserve\.joysound\.com/reserve/shop_search\?prefecture_id=\d+(?:&(?:amp;)?location_cd=\d+)?"),
+    "コート・ダジュール": re.compile(r"https://www\.hotpepper\.jp/strJ\d+/yoyaku/hpds/"),
+    "BanBan": re.compile(r"https://res-reserve\.com/restaurants/banban\d+"),
+    "CLUB DAM": re.compile(r"https://big-echo\.tottokun\.com/ownedmedia/ownedmedia_immediately_be/\w+"),
+    "歌広場": re.compile(r"(?<=href=\")(?:https://www\.utahiro\.com)?/reserve/\?store_name=[^\"'<>\s]+"),
+}
+# ROUND1 は店を選ぶ前の共通の予約ページしかない
+ROUND1_RESERVE = "https://www.round1.co.jp/yoyaku/"
 
 
 class FetchStopped(RuntimeError):
@@ -343,7 +356,13 @@ def update_jankara(start=1, end=2000, stop_after=60, delay=DELAY):
     return not failures
 
 
-def shop_data(chain, ident, name, address, lat, lng, url, hours=""):
+def reserve_link(chain, text):
+    """店のページなどから公式の予約ページを探す。なければ空。"""
+    found = RESERVE[chain].search(text or "")
+    return html_lib.unescape(found.group()) if found else ""
+
+
+def shop_data(chain, ident, name, address, lat, lng, url, hours="", reserve=""):
     try:
         latitude, longitude = float(lat), float(lng)
     except (ValueError, TypeError):
@@ -360,11 +379,23 @@ def shop_data(chain, ident, name, address, lat, lng, url, hours=""):
         "id": ident, "chain": chain, "name": normalize(html_lib.unescape(name)),
         "prefecture": pref.group() if pref else "", "address": address,
         "hours": normalize(hours), "lat": round(latitude, 6),
-        "lng": round(longitude, 6), "url": url,
+        "lng": round(longitude, 6), "url": url, "reserve": reserve,
     }
 
 
-def be_shops(session, delay):
+def be_reserve(session, key, old, pacer):
+    """予約ページは店ごとの API にある。前回分を使い、まだ分からない店だけ聞く。"""
+    if old and "reserve" in old:
+        return old["reserve"]
+    pacer.wait()
+    response = request(session, f"{BIGECHO_API}/{key}")
+    response.raise_for_status()
+    return reserve_link("ビッグエコー", response.json().get("WEB予約への遷移", ""))
+
+
+def be_shops(session, delay, previous=()):
+    old = {shop["id"]: shop for shop in previous}
+    pacer = RequestPacer(delay)
     time.sleep(delay)
     response = request(session, BIGECHO_API)
     response.raise_for_status()
@@ -373,10 +404,12 @@ def be_shops(session, delay):
     for item in items:
         title = re.sub(r"^カラオケ\s*", "", item.get("name", ""))
         title = re.sub(r"^(ビッグエコー|BIG\s*ECHO)\s*", "", title, flags=re.I)
-        shop = shop_data("ビッグエコー", "be-" + str(item["key"]), title, item.get("address", ""),
+        ident = "be-" + str(item["key"])
+        shop = shop_data("ビッグエコー", ident, title, item.get("address", ""),
                          item.get("latitude"), item.get("longitude"),
                          f"https://shop.big-echo.jp/map/{item['key']}")
         if shop:
+            shop["reserve"] = be_reserve(session, item["key"], old.get(ident), pacer)
             output.append(shop)
     return output
 
@@ -389,7 +422,8 @@ def parse_kan(url, markup):
     if not all((title, lat, lng, address)):
         return None
     return shop_data("カラオケ館", "kan-" + url.rsplit("/", 1)[-1],
-                     title.group(1), address.group(1), lat.group(1), lng.group(1), url)
+                     title.group(1), address.group(1), lat.group(1), lng.group(1), url,
+                     reserve=reserve_link("カラオケ館", markup))
 
 
 def parse_maneki(url, markup):
@@ -412,7 +446,7 @@ def parse_maneki(url, markup):
     hours = re.search(r"営業時間</[^>]+>\s*(?:<[^>]+>\s*)*((?:\d|24時間)[^<]{2,40})", markup)
     return shop_data("まねきねこ", "mn-" + url.rstrip("/").split("/")[-1], name,
                      address, coords.group(1), coords.group(2), url,
-                     hours.group(1) if hours else "")
+                     hours.group(1) if hours else "", reserve_link("まねきねこ", markup))
 
 
 def maneki_urls(session, delay):
@@ -447,7 +481,8 @@ def maneki_urls(session, delay):
 def details(urls, parser, previous, session, delay, *, allow_unlisted=False, pacer=None):
     """Skip known shop pages, fetch only new shops concurrently, preserve order."""
     urls = list(dict.fromkeys(urls))
-    known = {item["url"]: item for item in previous}
+    # 予約ページを読む前に保存した店は、1 回だけ読み直す
+    known = {item["url"]: item for item in previous if "reserve" in item}
     unknown = [url for url in urls if url not in known]
     found = {}
     failures = []
@@ -523,7 +558,7 @@ def parse_joysound(url, markup):
     slug = url.rstrip("/").rsplit("/", 1)[1]
     return shop_data("JOYSOUND", f"js-{slug}", title.group(1),
                      region.group(1) + locality.group(1) + street.group(1),
-                     geo.group(1), geo.group(2), url)
+                     geo.group(1), geo.group(2), url, reserve=reserve_link("JOYSOUND", markup))
 
 
 def joysound_shops(session, previous, delay):
@@ -549,12 +584,25 @@ def parse_cotedazur(markup):
     return shops
 
 
-def cotedazur_shops(session, delay):
+def cotedazur_shops(session, delay, previous=()):
+    """一覧の XML に予約ページがないので、まだ分からない店だけ店のページを読む。"""
     resp = request(session, f"{COTE_BASE}/branch/data/branch/shopinfo.xml")
     resp.raise_for_status()
     shops = parse_cotedazur(resp.text)
     if not shops:
         raise ValueError("Cote d'Azur shop XML contains no valid entries")
+    old = {shop["id"]: shop for shop in previous}
+    pacer = RequestPacer(delay)
+    for shop in shops:
+        if "reserve" in old.get(shop["id"], {}):
+            shop["reserve"] = old[shop["id"]]["reserve"]
+            continue
+        pacer.wait()
+        page = request(session, shop["url"])
+        if page.status_code in (404, 410):
+            continue
+        page.raise_for_status()
+        shop["reserve"] = reserve_link("コート・ダジュール", page.text)
     return shops
 
 
@@ -583,7 +631,7 @@ def parse_round1(url, markup, facility_markup):
         return None
     slug = url.rsplit("/", 1)[1].removesuffix(".html")
     return shop_data("ROUND1", f"r1-{slug}", title.group(1),
-                     address.group(1), coords.group(1), coords.group(2), url)
+                     address.group(1), coords.group(1), coords.group(2), url, reserve=ROUND1_RESERVE)
 
 
 def round1_shops(session, previous, delay):
@@ -599,7 +647,7 @@ def round1_shops(session, previous, delay):
         raise ValueError("ROUND1 area pages contained no store links")
     urls = [f"{ROUND1_BASE}/tenpo/{slug}.html" for slug in slugs]
     listed = set(urls)
-    known = [shop for shop in previous if shop["url"] in listed]
+    known = [{**shop, "reserve": ROUND1_RESERVE} for shop in previous if shop["url"] in listed]
 
     def is_live(shop):
         pacer.wait()
@@ -639,7 +687,8 @@ def parse_banban(url, markup):
         return None
     number = url.rsplit("/", 1)[1].removesuffix(".html")
     return shop_data("BanBan", f"bb-{number}", name.group(1), address.group(1),
-                     coords.group(1), coords.group(2), url, hours.group(1) if hours else "")
+                     coords.group(1), coords.group(2), url, hours.group(1) if hours else "",
+                     reserve_link("BanBan", markup))
 
 
 def banban_shops(session, previous, delay):
@@ -718,7 +767,7 @@ def parse_clubdam(url, markup):
     name = re.sub(r"^カラオケ\s*CLUB\s*DAM\s*", "", name)
     name = re.sub(r"\s*(?:\(セルフカラオケ\)|【[^】]*】)", "", name).strip()
     return shop_data("CLUB DAM", f"dam-{name}", name, address.group(1),
-                     latlng[0], latlng[1], url)
+                     latlng[0], latlng[1], url, reserve=reserve_link("CLUB DAM", markup))
 
 
 def clubdam_shops(session, previous, delay):
@@ -732,6 +781,8 @@ def clubdam_shops(session, previous, delay):
 
 
 def parse_utahiroba(url, markup):
+    # 予約フォームへのリンクは相対パスで、店名が日本語のまま書かれている
+    reserve = reserve_link("歌広場", markup)
     name = re.search(r"<title>\s*([^｜|<]+)", markup)
     lat = re.search(r"!3d(\d{2}\.\d+)", markup)
     lng = re.search(r"!2d(1\d{2}\.\d+)", markup)
@@ -740,7 +791,8 @@ def parse_utahiroba(url, markup):
     if not all((name, lat, lng, address)):
         return None
     return shop_data("歌広場", "uh-" + url.rsplit("/", 1)[1], name.group(1), address.group(1),
-                     lat.group(1), lng.group(1), url, hours.group(1) if hours else "")
+                     lat.group(1), lng.group(1), url, hours.group(1) if hours else "",
+                     urljoin(UTAHIROBA_BASE, quote(reserve, safe=":/?=&%")) if reserve else "")
 
 
 def utahiroba_shops(session, previous, delay):
@@ -775,7 +827,7 @@ def update_chains(delay=DELAY):
         previous = [s for s in old if s["chain"] == chain]
         try:
             if chain == "ビッグエコー":
-                current = be_shops(session, delay)
+                current = be_shops(session, delay, previous)
             elif chain == "カラオケ館":
                 time.sleep(delay)
                 xml = request(session, "https://karaokekan.jp/sitemap.xml")
@@ -790,7 +842,7 @@ def update_chains(delay=DELAY):
             elif chain == "JOYSOUND":
                 current = joysound_shops(session, previous, delay)
             elif chain == "コート・ダジュール":
-                current = cotedazur_shops(session, delay)
+                current = cotedazur_shops(session, delay, previous)
             elif chain == "ROUND1":
                 current = round1_shops(session, previous, delay)
             elif chain == "BanBan":

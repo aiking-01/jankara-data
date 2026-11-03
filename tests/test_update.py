@@ -188,7 +188,7 @@ class ParsingTests(unittest.TestCase):
         from unittest.mock import patch
 
         url = "https://shop.joysound.com/shop/joysound-new/"
-        known = [{"url": url, "id": "js-joysound-new", "modified": "2026-11-03"}]
+        known = [{"url": url, "id": "js-joysound-new", "modified": "2026-11-03", "reserve": ""}]
         class Response:
             text = f"<loc>{url}</loc><lastmod>2026-11-03</lastmod>"
             def raise_for_status(self):
@@ -218,6 +218,52 @@ class ParsingTests(unittest.TestCase):
                         [], object(), 0.2, allow_unlisted=True,
                     )
         self.assertEqual(len(shops), 11)
+
+    def test_reserve_links_come_from_each_official_shop_page(self):
+        pages = {
+            "まねきねこ": ('<a href="https://reservation.karaokemanekineko.jp/?storeId=669">',
+                       "https://reservation.karaokemanekineko.jp/?storeId=669"),
+            "カラオケ館": ('<a href="https://liff.line.me/1654959827-EpyGvRJ0/book/oa/@968yujxz/?utm_source=owned_media">',
+                      "https://liff.line.me/1654959827-EpyGvRJ0/book/oa/@968yujxz/"),
+            "JOYSOUND": ('<a href="https://reserve.joysound.com/reserve/shop_search?prefecture_id=38&amp;location_cd=40">',
+                         "https://reserve.joysound.com/reserve/shop_search?prefecture_id=38&location_cd=40"),
+            "コート・ダジュール": ('<a href="https://www.hotpepper.jp/strJ000726746/yoyaku/hpds/">',
+                           "https://www.hotpepper.jp/strJ000726746/yoyaku/hpds/"),
+            "BanBan": ('<a href="https://res-reserve.com/restaurants/banban129743">',
+                       "https://res-reserve.com/restaurants/banban129743"),
+            "CLUB DAM": ('<a href="https://big-echo.tottokun.com/ownedmedia/ownedmedia_immediately_be/D1Dn8a3HkpBCe9P">',
+                         "https://big-echo.tottokun.com/ownedmedia/ownedmedia_immediately_be/D1Dn8a3HkpBCe9P"),
+        }
+        for chain, (markup, expected) in pages.items():
+            self.assertEqual(module.reserve_link(chain, markup), expected, chain)
+            self.assertEqual(module.reserve_link(chain, "<a href=\"/reserve/\">"), "", chain)
+
+    def test_utahiroba_reserve_link_is_made_absolute(self):
+        url = "https://www.utahiro.com/shops/st_shinjuku/205"
+        markup = """<title>新宿三丁目店｜カラオケルーム歌広場</title>
+            <iframe src="https://maps?!2d139.70!3d35.69"></iframe>
+            >住所</div></div><div><div>東京都新宿区新宿3-1-1</div>
+            <a href="/reserve/?store_name=新宿三丁目店">このサイトで予約する</a>"""
+        shop = module.parse_utahiroba(url, markup)
+        self.assertEqual(shop["reserve"],
+                         "https://www.utahiro.com/reserve/?store_name=%E6%96%B0%E5%AE%BF%E4%B8%89%E4%B8%81%E7%9B%AE%E5%BA%97")
+
+    def test_big_echo_reserve_is_asked_only_for_shops_without_one(self):
+        from unittest.mock import patch
+
+        class Response:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"WEB予約への遷移": "https://big-echo.tottokun.com/ownedmedia/ownedmedia_immediately_be/Yc9JoH3F8cMJEDR"}
+
+        with patch.object(module, "request", return_value=Response()) as fetch:
+            pacer = module.RequestPacer(0)
+            self.assertEqual(module.be_reserve(object(), "0077", {"reserve": "kept"}, pacer), "kept")
+            self.assertEqual(module.be_reserve(object(), "0077", {"id": "be-0077"}, pacer),
+                             "https://big-echo.tottokun.com/ownedmedia/ownedmedia_immediately_be/Yc9JoH3F8cMJEDR")
+        self.assertEqual(fetch.call_count, 1)
 
     def test_maneki_page_without_map_link_and_shop_in_preparation(self):
         url = "https://www.karaokemanekineko.jp/locations/yamaguchi/yanai/yanai-store/"
