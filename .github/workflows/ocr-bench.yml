@@ -1,0 +1,80 @@
+name: OCR benchmark
+
+# 料金表の OCR が GitHub Actions の CPU でどれだけ速く、正しく読めるかを測る。
+# 巡回（refresh.yml）とは別に動き、結果は ocr-bench-results ブランチに置く。
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/ocr-bench.yml'
+      - 'ocr/**'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ocr-bench
+  cancel-in-progress: false
+
+env:
+  LLAMA_TAG: b12063
+  MODEL_REPO: https://huggingface.co/nakanishi08/Qwen3.5-ocr-jp-2b-GGUF/resolve/main
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python packages
+        run: python -m pip install requests pypdfium2 pillow
+
+      - name: Restore model
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: models
+          key: qwen35ocr-jp-2b-q4km-${{ env.LLAMA_TAG }}
+
+      - name: Download model and llama.cpp
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p models
+          curl -fsSL -o models/model.gguf "$MODEL_REPO/qwen35ocr-jp-2b-q4_k_m.gguf"
+          curl -fsSL -o models/mmproj.gguf "$MODEL_REPO/qwen35ocr-jp-2b-mmproj-f16.gguf"
+          curl -fsSL -o llama.tar.gz "https://github.com/ggml-org/llama.cpp/releases/download/$LLAMA_TAG/llama-$LLAMA_TAG-bin-ubuntu-x64.tar.gz"
+          mkdir -p models/llama && tar -xzf llama.tar.gz -C models/llama --strip-components=1
+
+      - name: Check model hashes
+        run: sha256sum -c ocr/models.sha256
+
+      - name: Start OCR server
+        run: |
+          nproc
+          ls models/llama | head -40
+          SERVER=$(find models/llama -name llama-server -type f | head -1)
+          LD_LIBRARY_PATH=$(dirname "$SERVER") nohup "$SERVER" -m models/model.gguf --mmproj models/mmproj.gguf \
+            --image-min-tokens 1024 --host 127.0.0.1 --port 11436 -c 8192 -n 4096 -t "$(nproc)" > server.log 2>&1 &
+          for i in $(seq 1 120); do curl -sf http://127.0.0.1:11436/health && break; sleep 5; done
+          tail -20 server.log
+
+      - name: Run benchmark
+        run: python ocr/bench.py results
+
+      - name: Save results
+        if: always()
+        run: |
+          cp server.log results/ 2>/dev/null || true
+          cd results
+          git init -q
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -qm "OCR benchmark ${{ github.sha }}"
+          git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" HEAD:refs/heads/ocr-bench-results
