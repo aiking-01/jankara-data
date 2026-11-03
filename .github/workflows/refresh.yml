@@ -60,32 +60,16 @@ jobs:
         continue-on-error: true
         run: python scripts/update_maneki_prices.py
 
-      - name: Convert prices to amounts
-        run: node scripts/convert.mjs
-
-      - name: Check amounts
-        run: node --test tests/amounts.test.mjs tests/ocr.test.mjs
-
-      - name: Build compressed files
+      # 元データを先に積み、最新の main の上で金額への変換、確認、圧縮をしてプッシュする。
+      # ocr.yml と同時に動いて main が先に進んでも、dist を作り直して再試行するので結果を失わない
+      - name: Publish data
         id: publish
         continue-on-error: true
-        run: python scripts/publish.py
-
-      - name: Commit data
         shell: bash
         run: |
           set -euo pipefail
           python scripts/select_changes.py
-          git add chains.json source dist
-          if git diff --cached --quiet; then
-            echo "No data changes"
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "data: refresh"
-          git pull --rebase origin main
-          git push origin HEAD:main
+          bash scripts/push_data.sh "data: refresh" chains.json source
 
       - name: Fail run when a step failed
         if: steps.chains.outcome == 'failure' || steps.jankara.outcome == 'failure' || steps.bigecho.outcome == 'failure' || steps.maneki.outcome == 'failure' || steps.publish.outcome == 'failure'

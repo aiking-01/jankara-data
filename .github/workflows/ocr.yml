@@ -147,30 +147,7 @@ jobs:
       - name: Store results
         run: python ocr/merge.py reads/*/reads.json
 
-      # 読んでいる間に refresh.yml が dist を更新していることがある。読んだ結果だけ先に積み、最新の料金表から dist を作り直す
-      - name: Commit results on the latest data
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add source/ocr.json
-          git diff --cached --quiet || git commit -m "data: read price images"
-          git pull --rebase origin main
-
-      - name: Convert prices to amounts
-        run: node scripts/convert.mjs
-
-      - name: Check amounts
-        run: node --test tests/amounts.test.mjs tests/ocr.test.mjs
-
-      - name: Build compressed files
-        run: python scripts/publish.py
-
-      - name: Commit data
-        shell: bash
-        run: |
-          set -euo pipefail
-          git add dist
-          git diff --cached --quiet || git commit -m "data: publish read prices"
-          git push origin HEAD:main
+      # 読んでいる間に refresh.yml が dist を更新していることがある。読んだ結果だけ先に積み、
+      # 最新の料金表から dist を作り直してプッシュする。プッシュの直前に main が進んでも作り直して再試行する
+      - name: Publish results
+        run: bash scripts/push_data.sh "data: read price images" source/ocr.json
