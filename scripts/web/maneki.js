@@ -98,15 +98,28 @@ function noteAllows(tokens, pair) {
   const note = line.replace(/\(フリー[^)]*\)/g, '').replace(/ワンドリンクorドリンクバー$/, '');
   // 「※金・土・祝前は翌3:00まで」のように終わりが帯より遅いだけなら、帯の中の金額は変わらない
   const later = LATER_CLOSE.exec(note);
-  if (later) return spanOf(pair[0].text, later[1])[1] >= spanOf(pair[0].text, pair[1].text)[1];
+  if (later && spanOf(pair[0].text, later[1])[1] >= spanOf(pair[0].text, pair[1].text)[1]) return true;
   // 「※週末は18:00 ~ 翌7:00」のように帯より広いだけなら、帯の中の金額は変わらない
   const wider = WIDER_HOURS.exec(note);
   if (wider) {
     const [from, to] = spanOf(pair[0].text, pair[1].text);
     const [noteFrom, noteTo] = spanOf(wider[1], wider[2]);
-    return noteFrom <= from && noteTo >= to;
+    if (noteFrom <= from && noteTo >= to) return true;
   }
-  return HARMLESS_NOTE.test(note) && !CHANGES_PRICE.test(note);
+  return (HARMLESS_NOTE.test(note) && !CHANGES_PRICE.test(note)) || onlyHours(note);
+}
+
+// フリータイムやパックだけの説明を除くと、曜日と時刻しか残らない注記か。帯の時刻が曜日で変わるだけで、金額は変わらない。
+// 使える文字を限っているので、金額や区分の語が混ざると通らない
+const OTHER_PLANS = /\([^()]*(?:フリー|パック|FT)[^()]*\)|※[^※]*(?:フリー|パック|FT)[^※]*/g;
+// 帯の名前や、金額に関わらない案内
+const PLAIN_NOTE = /^(?:\.|昼料金|夜料金|室料|※オプションワンドリンクオーダーorドリンクバー|※入室処理後のコース変更は出来かねます。|※15歳以下18:00まで。小学生、未就学生のみでの入店不可)$/;
+const HOURS_ONLY = /^[0-9:~時翌※()、・.週末平金土日月木祝前曜昼夜の受付営業間よりまではです]*$|^[※()]*$/;
+function onlyHours(note) {
+  if (PLAIN_NOTE.test(note.replace(OTHER_PLANS, ''))) return true;
+  const rest = note.replace(OTHER_PLANS, '').replace(/CLOSE|OPEN/g, '時');
+  if (rest && !/\d/.test(rest)) return false;
+  return HOURS_ONLY.test(rest) && !/(?:^|[^0-9:])\d時間/.test(rest.replace('24時間', ''));
 }
 
 // 帯の中で最初に現れる金額の行。ラベルのすぐ下にある

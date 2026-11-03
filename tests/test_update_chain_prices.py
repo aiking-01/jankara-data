@@ -31,10 +31,11 @@ PAGE = """
 
 
 class ParsePage(unittest.TestCase):
-    def test_reads_30min_tables_and_hours(self):
+    def test_reads_every_table_and_hours(self):
         parsed = u.parse_page(PAGE)
         self.assertEqual(parsed["hours"], "月曜日 9:00～2:00日曜・祝祭日 9:00～2:00")
-        self.assertEqual(len(parsed["sections"]), 1)
+        self.assertEqual(len(parsed["sections"]), 2)
+        self.assertEqual(parsed["sections"][1]["heading"], "フリータイム")
         section = parsed["sections"][0]
         self.assertEqual(section["time"], "OPEN～18：00")
         self.assertEqual(section["title"], "1ドリンクオーダー制")
@@ -87,7 +88,8 @@ class Update(unittest.TestCase):
         self.assertTrue(ok)
         shop = self.read()["shops"]["be-0001"]
         self.assertEqual(shop["page"], "https://big-echo.jp/?p=1")
-        self.assertEqual(len(shop["sections"]), 1)
+        self.assertEqual(len(shop["sections"]), 2)
+        self.assertEqual(shop["scope"], "all")
         self.assertGreater(self.read()["updated_at"], 1)
         # 次回は保存した URL を使い、API を呼ばない
         shops = self.read()["shops"]
@@ -116,7 +118,7 @@ class Update(unittest.TestCase):
         ok, session = self.run_update(["be-0001"], lambda url, timeout: replies.pop(0))
         self.assertTrue(ok)
         self.assertEqual(session.get.call_count, 2)
-        self.assertEqual(len(self.read()["shops"]["be-0001"]["sections"]), 1)
+        self.assertEqual(len(self.read()["shops"]["be-0001"]["sections"]), 2)
 
     def test_stops_fetching_when_throttled(self):
         shops = {f"be-{i:04}": {"hours": "h", "sections": [{"time": "old"}], "page": "https://big-echo.jp/?p=1", "checked_at": 0} for i in range(50)}
@@ -128,9 +130,15 @@ class Update(unittest.TestCase):
         self.assertEqual(self.read()["updated_at"], 5)
 
     def test_recent_shops_are_skipped(self):
-        self.stored({"be-0001": {"hours": "", "sections": [{}], "page": "https://big-echo.jp/?p=1", "checked_at": int(time.time())}})
+        self.stored({"be-0001": {"hours": "", "sections": [{}], "page": "https://big-echo.jp/?p=1", "scope": "all", "checked_at": int(time.time())}})
         _, session = self.run_update(["be-0001"], lambda url, timeout: response(PAGE))
         session.get.assert_not_called()
+
+    def test_shops_saved_with_30min_tables_only_are_fetched_again(self):
+        self.stored({"be-0001": {"hours": "", "sections": [{}], "page": "https://big-echo.jp/?p=1", "checked_at": int(time.time())}})
+        _, session = self.run_update(["be-0001"], lambda url, timeout: response(PAGE))
+        self.assertEqual(session.get.call_count, 1)
+        self.assertEqual(len(self.read()["shops"]["be-0001"]["sections"]), 2)
 
     def test_failure_keeps_previous_and_does_not_advance_timestamp(self):
         old = {"hours": "h", "sections": [{"time": "old"}], "page": "https://big-echo.jp/?p=1", "checked_at": 0}
@@ -151,7 +159,7 @@ class Update(unittest.TestCase):
     def test_closed_shop_is_removed(self):
         recent = int(time.time())
         ids = [f"be-{i:04}" for i in range(10)]
-        self.stored({shop_id: {"hours": "", "sections": [{}], "checked_at": recent} for shop_id in ids})
+        self.stored({shop_id: {"hours": "", "sections": [{}], "scope": "all", "checked_at": recent} for shop_id in ids})
         self.run_update(ids[:9], lambda url, timeout: response(PAGE))
         self.assertEqual(list(self.read()["shops"]), ids[:9])
 

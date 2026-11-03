@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ビッグエコーの 30 分料金の表と営業時間を公式サイトから取得して保存する。
+"""ビッグエコーの料金表（30 分料金、フリータイム、パック）と営業時間を公式サイトから取得して保存する。
 
 金額への変換は画面側 (web/bigecho.js) の 1 箇所で行うので、ここでは表をそのまま取り出すだけにする。
 
@@ -36,6 +36,8 @@ RECHECK_SECONDS = 20 * 3600
 # 表を読めた店が前回よりこの割合を下回ったら、サイト変更とみなして前回の値を残す
 MIN_RATIO = 0.8
 SAVE_EVERY = 20
+# 保存した表の範囲。30 分料金だけを保存していた頃の店は、日時に関係なく取り直す
+SCOPE = "all"
 POINT_API = "https://shop.big-echo.jp/api/point/"
 ALLOWED_PAGE_HOSTS = ("https://big-echo.jp/", "https://shop.big-echo.jp/")
 
@@ -49,7 +51,7 @@ def clean(text: str | None) -> str:
 
 
 def parse_page(html: str) -> dict | None:
-    """30 分料金の表と営業時間を取り出す。料金欄がなければ None。"""
+    """料金欄の表と営業時間を取り出す。料金欄がなければ None。"""
     soup = BeautifulSoup(html, "html.parser")
     root = soup.select_one("#price")
     if root is None:
@@ -68,8 +70,6 @@ def parse_page(html: str) -> dict | None:
                 continue
             single = [row[0] for row in rows if len(row) == 1 and row[0]]
             title = single[0] if single else ""
-            if "30分" not in unicodedata.normalize("NFKC", f"{heading}{time_text}{title}").replace(" ", ""):
-                continue
             sections.append({"heading": heading, "time": time_text, "title": title, "note": " ".join(single[1:]),
                              "header": body[0], "rows": body[1:]})
     label = next((dt for dt in soup.find_all("dt") if "営業時間" in dt.get_text()), None)
@@ -131,7 +131,7 @@ def fetch_shop(session: requests.Session, shop_id: str, known: str | None) -> di
         return None
     # 転送の先を覚えて、次回から 1 回の通信で済ませる
     final = response.url.replace("http://", "https://", 1)
-    return {**parsed, "page": final if final.startswith(ALLOWED_PAGE_HOSTS) else url, "checked_at": int(time.time())}
+    return {**parsed, "page": final if final.startswith(ALLOWED_PAGE_HOSTS) else url, "scope": SCOPE, "checked_at": int(time.time())}
 
 
 def has_tables(shops: dict[str, dict]) -> int:
@@ -152,7 +152,8 @@ def update(log=print) -> bool:
     now = int(time.time())
     done = 0
     ids = shop_ids()
-    due = [shop_id for shop_id in ids if now - shops.get(shop_id, {}).get("checked_at", 0) >= RECHECK_SECONDS]
+    due = [shop_id for shop_id in ids if now - shops.get(shop_id, {}).get("checked_at", 0) >= RECHECK_SECONDS
+           or shops.get(shop_id, {}).get("scope") != SCOPE]
     throttled = threading.Event()
 
     def fetch(shop_id: str) -> tuple[str, dict | None, str]:
@@ -202,7 +203,7 @@ def from_cache(directory: Path) -> None:
         path = directory / f"{shop_id}.html"
         parsed = parse_page(path.read_text(encoding="utf-8")) if path.exists() else None
         if parsed is not None:
-            shops[shop_id] = {**parsed, "checked_at": now}
+            shops[shop_id] = {**parsed, "scope": SCOPE, "checked_at": now}
     save(shops, now)
     print(f"{len(shops)} 店を保存しました")
 

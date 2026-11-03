@@ -312,6 +312,111 @@ export function weekHoursText(week) {
   return [...groups].map(([text, keys]) => `${keys.join('')} ${text}`).join(' / ');
 }
 
+// ---- フリータイムとパック ----
+
+// 誰でも使える定価のプランだけを読む。人数、性別、学生、予約、時期の条件が付くものは比べられないので外す
+const NOT_FIXED = /パーティー|コース|名様|予約|限定|学生|学得|なでしこ|女性|レディース|早割|遅割|早得|おはカラ|期間|\d+月\d+|ダーツ|飲み放題|食事|ランチ|ナイトパック|エンドレス|プラン|倶楽部|クラブ|パスポート/;
+// 注記は「学割・シニアは会員価格」のような説明が多いので、利用の条件を書いたものだけで外す
+const NOT_FIXED_NOTE = /\d名様(?:以上|から|~)|名様以上|限定プラン|会員[^。※]*限定|グループ限定|期間限定|予約制|事前予約|\d+月\d+日/;
+// 「※金曜・土曜は23時～29時」のように曜日で時間帯が変わる表は、どの曜日の時間か決められない
+const DAY_HOURS = /[月火水木金土日祝][^。※]*?\d{1,2}(?::\d{2}|時)/;
+const STUDENT_ONLY_BAR = /(?:学割|学生)(?:料金)?は(?:ソフト)?ドリンクバー付/;
+const PACK = /(?:(?<=\d:\d{2})|(?<!\d))(\d{1,2})時間パック/; // 「OPEN~19:003時間パック」の 19:00 の 00 を拾わない
+const FREE_NAME = /(昼|夕方|夜|深夜|朝まで|ロング|ショート|ミドル)?(?:フリータイム|フリー|FT)/;
+const LAST_ENTRY = /(?:最終受付(?:時間)?|受付(?:終了|時間)?)(?:は)?[:：]?(\d{1,2}:\d{2})(?:まで)?/g;
+const MAX_FIXED_PRICE = 9000;
+const clockDigits = (text) => hourDigits(text.replace(/(\d{1,2})時(\d{1,2})分/g, (_, h, m) => `${h}:${m.padStart(2, '0')}`));
+
+function fixedName(section) {
+  const label = norm(`${section.time} ${section.title}`);
+  const heading = norm(section.heading);
+  const pack = PACK.exec(label);
+  const free = FREE_NAME.exec(label);
+  if (pack && free) return null; // 1 つの表に両方の名前があると、どちらの料金か決められない
+  if (pack) return `${pack[1]}時間パック`;
+  if (free) return `${free[1] ?? ''}フリータイム`;
+  // 「フリータイム料金」の見出しの下の「OPEN〜19:00」。パックと並ぶ見出しではどちらか決められない
+  if (/フリー/.test(heading) && !/パック/.test(heading)) return `${FREE_NAME.exec(heading)?.[1] ?? ''}フリータイム`;
+  return null;
+}
+
+// 最終受付。受付の記載があるのに時刻を読めない、時刻が 2 つある、曜日で変わる表は使わない
+function lastEntryOf(section) {
+  const text = clockDigits(norm(`${section.time} ${section.title} ${section.note}`));
+  if (!/受付/.test(text)) return '';
+  // 「受付時間 15:00～17:59」は終わりの時刻が最終受付。「18:00～CLOSE」は閉店まで受け付ける
+  const span = [...text.matchAll(/受付(?:時間)?[:：]?(\d{1,2}:\d{2})[~〜～](\d{1,2}:\d{2}|CLOSE)/gi)];
+  if (span.length) return span.length === 1 && !/[月火水木金土日祝][^。※]*受付/.test(text) ? (/close/i.test(span[0][2]) ? '' : span[0][2]) : null;
+  const times = [...new Set([...text.matchAll(LAST_ENTRY)].map((match) => match[1]))];
+  if (times.length !== 1) return null;
+  if (/[月火水木金土日祝][^。※]*受付/.test(text)) return null;
+  return times[0];
+}
+
+// 表 1 つを { columns } か { reason } にする
+function readFixed(section, allStudents) {
+  const label = norm(`${section.heading} ${section.time} ${section.title}`);
+  if (/30分/.test(label)) return { reason: 'slot' };
+  if (NOT_FIXED.test(label) || NOT_FIXED_NOTE.test(norm(section.note))) return { reason: 'condition' };
+  const words = clockDigits(norm(`${section.time} ${section.title}`)).replace(/(?:最終)?受付[^※]*/g, '');
+  if (DAY_HOURS.test(words)) return { reason: 'day-hours' };
+  const name = fixedName(section);
+  if (!name) return { reason: 'name' };
+  const lastEntry = lastEntryOf(section);
+  if (lastEntry === null) return { reason: 'last-entry' };
+  // 時間帯の欄に添えた受付の説明とプラン名は、時間帯を読む前に外す（受付は lastEntryOf で読んだ）
+  const time = clockDigits(norm(section.time)).replace(/[※*]?最終受付.*$/, '').replace(/[(（【][^)）】]*(?:受付|パック|フリー)[^)）】]*[)）】]/g, '');
+  const columns = readSection({ ...section, time }, allStudents);
+  if (!columns) return { reason: 'table' };
+  // 1 人の追加料金が注記だけにある表は、1 人の金額を出せない（通常の金額で出すと安く見える）
+  const soloNote = /(?:お?(?:一人|1人|ひとり)(?:様|カラオケ)?|1名様?)[^。]*?[+＋]\d/.test(norm(`${section.title} ${section.note} ${section.header.join(' ')}`));
+  if (soloNote && columns.every((column) => column.solo === null)) return { reason: 'solo-note' };
+  for (const column of columns) {
+    const values = [...Object.values(column.prices), column.solo].filter((value) => value !== null);
+    if (values.some((value) => value < 100 || value > MAX_FIXED_PRICE)) return { reason: 'price-range' };
+  }
+  // 「学割はドリンクバー付」だけなら、ほかの区分の飲み物の条件は書いていない
+  const studentOnly = STUDENT_ONLY_BAR.test(norm(section.title)) && !/1ドリンク|ワンドリンク|オーダー制/.test(norm(`${section.time} ${section.title}`));
+  const fix = (drinks) => (studentOnly ? { drink: '', student_drink: 'ドリンクバー付', senior_drink: '' } : drinks);
+  return { columns: columns.map((column) => ({ ...column, drinks: fix(column.drinks), name, lastEntry })) };
+}
+
+// 読まなかった理由の集計（調査用）
+export function fixedReasons(sections) {
+  return (sections ?? []).map((section) => readFixed(section, true).reason ?? 'ok');
+}
+
+// 同じ名前、時間帯、飲み物の条件の列を 1 つのプランにまとめる。読めないまとまりは捨てる（30 分料金だけで比べる）
+function buildFixed(columns) {
+  const groups = new Map();
+  for (const column of columns) {
+    const key = `${column.name}|${column.hours}|${column.lastEntry}|${column.drinks.drink}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(column);
+  }
+  const plans = [];
+  const solos = [];
+  const rank = (row) => (row.day.includes('祝前') ? 0 : row.day.includes('祝') ? 1 : 2);
+  for (const group of groups.values()) {
+    const mapped = dayLabels(group.map((column) => column.days));
+    if (!mapped || mapped.holidayUnknown) continue;
+    const days = group.map((column, index) => ({ day: mapped.labels[index], prices: column.prices }))
+      .sort((a, b) => rank(a) - rank(b));
+    const soloDays = group.map((column, index) => ({ day: mapped.labels[index], prices: column.solo === null ? {} : { 会員: column.solo } }))
+      .sort((a, b) => rank(a) - rank(b));
+    if (mapped.partial) {
+      days.push({ day: '平日', prices: {} });
+      soloDays.push({ day: '平日', prices: {} });
+    }
+    const { name, hours, lastEntry, drinks } = group[0];
+    plans.push({ name, hours, last_entry: lastEntry, days, ...drinks });
+    if (soloDays.some((row) => Object.keys(row.prices).length)) solos.push({ name, hours, last_entry: lastEntry, days: soloDays });
+  }
+  // 同じ名前と時間帯のプランが飲み物の条件違いで 2 つあると、どちらが定価か決められない
+  const twice = (plan) => plans.filter((other) => other.name === plan.name && other.hours === plan.hours).length > 1;
+  return { plans: plans.filter((plan) => !twice(plan)), solos: solos.filter((plan) => !twice(plan)) };
+}
+
 const CUSTOMERS = ['学生会員', '学生', '会員', 'シニア', '一般'];
 const ALERT_WORDS = /特別料金|特別期間|年末年始|お盆|GW|ゴールデンウィーク|繁忙/g;
 
@@ -333,7 +438,16 @@ export function convertBigEcho(sections, hoursText) {
   if (!built) return { reason: 'unreadable-days' };
   const problem = checkCoverage(built.plans, week);
   if (problem) return { reason: problem };
-  const table = (plans) => [{ band: '30分', customers: CUSTOMERS, plans, note: '' }];
+  const fixed = buildFixed((sections ?? []).flatMap((section) => readFixed(section, allStudents).columns ?? []));
+  const tables = (slot, free) => [
+    { band: '30分', customers: CUSTOMERS, plans: slot, note: '' },
+    ...(free.length ? [{ band: 'フリータイム', customers: CUSTOMERS, plans: free, note: '' }] : []),
+  ];
   const alerts = [...new Set(candidates.flatMap((s) => norm(`${s.title} ${s.note}`).match(ALERT_WORDS) ?? []))];
-  return { regular: table(built.plans), solo: built.solos.length ? table(built.solos) : [], week, alerts };
+  return {
+    regular: tables(built.plans, fixed.plans),
+    solo: built.solos.length || fixed.solos.length ? tables(built.solos, fixed.solos) : [],
+    week,
+    alerts,
+  };
 }
