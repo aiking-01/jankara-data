@@ -1,0 +1,198 @@
+[
+ {
+  "name": "mn-toyama-ekimae-2nd-store",
+  "kind": "text",
+  "size": [
+   1273,
+   1800
+  ],
+  "seconds": 321.1,
+  "usage": {
+   "completion_tokens": 2270,
+   "prompt_tokens": 2258,
+   "total_tokens": 4528,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "timings": {
+   "cache_n": 0,
+   "prompt_n": 2258,
+   "prompt_ms": 152680.527,
+   "prompt_per_token_ms": 67.61759388839681,
+   "prompt_per_second": 14.789050341698127,
+   "predicted_n": 2270,
+   "predicted_ms": 168235.088,
+   "predicted_per_token_ms": 74.14503657999119,
+   "predicted_per_second": 13.48707946109316
+  }
+ },
+ {
+  "name": "mn-chitose-ekimae-store",
+  "kind": "text",
+  "size": [
+   1273,
+   1800
+  ],
+  "seconds": 299.6,
+  "usage": {
+   "completion_tokens": 2001,
+   "prompt_tokens": 2258,
+   "total_tokens": 4259,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "timings": {
+   "cache_n": 0,
+   "prompt_n": 2258,
+   "prompt_ms": 153156.677,
+   "prompt_per_token_ms": 67.82846634189548,
+   "prompt_per_second": 14.743072546553096,
+   "predicted_n": 2001,
+   "predicted_ms": 146239.279,
+   "predicted_per_token_ms": 73.1196395,
+   "predicted_per_second": 13.676216223686387
+  }
+ },
+ {
+  "name": "mn-nishikawaguchi-nishiguchi-store",
+  "kind": "text",
+  "size": [
+   1273,
+   1800
+  ],
+  "seconds": 317.4,
+  "usage": {
+   "completion_tokens": 2245,
+   "prompt_tokens": 2258,
+   "total_tokens": 4503,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "timings": {
+   "cache_n": 0,
+   "prompt_n": 2258,
+   "prompt_ms": 153037.767,
+   "prompt_per_token_ms": 67.77580469441983,
+   "prompt_per_second": 14.75452788068974,
+   "predicted_n": 2245,
+   "predicted_ms": 164161.638,
+   "predicted_per_token_ms": 73.1558101604278,
+   "predicted_per_second": 13.6694542485011
+  }
+ },
+ {
+  "name": "mn-asaka-ekimae-store",
+  "kind": "no-text",
+  "size": [
+   1273,
+   1800
+  ],
+  "seconds": 301.8,
+  "usage": {
+   "completion_tokens": 2064,
+   "prompt_tokens": 2258,
+   "total_tokens": 4322,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "timings": {
+   "cache_n": 0,
+   "prompt_n": 2258,
+   "prompt_ms": 152089.127,
+   "prompt_per_token_ms": 67.35568069087688,
+   "prompt_per_second": 14.8465577029711,
+   "predicted_n": 2064,
+   "predicted_ms": 149546.558,
+   "predicted_per_token_ms": 72.48984876393601,
+   "predicted_per_second": 13.795034988367972
+  }
+ },
+ {
+  "name": "mn-machida-1st-store",
+  "kind": "no-text",
+  "size": [
+   1273,
+   1800
+  ],
+  "seconds": 302.0,
+  "usage": {
+   "completion_tokens": 2053,
+   "prompt_tokens": 2258,
+   "total_tokens": 4311,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "timings": {
+   "cache_n": 0,
+   "prompt_n": 2258,
+   "prompt_ms": 152310.072,
+   "prompt_per_token_ms": 67.45353055801594,
+   "prompt_per_second": 14.825020895532111,
+   "predicted_n": 2053,
+   "predicted_ms": 149517.215,
+   "predicted_per_token_ms": 72.86413986354776,
+   "predicted_per_second": 13.724172163051593
+  }
+ },
+ {
+  "name": "mn-kuki-store",
+  "kind": "covered",
+  "size": [
+   1273,
+   1800
+  ],
+  "seconds": 319.9,
+  "usage": {
+   "completion_tokens": 2298,
+   "prompt_tokens": 2258,
+   "total_tokens": 4556,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "timings": {
+   "cache_n": 0,
+   "prompt_n": 2258,
+   "prompt_ms": 152641.538,
+   "prompt_per_token_ms": 67.60032683790965,
+   "prompt_per_second": 14.792827886731592,
+   "predicted_n": 2298,
+   "predicted_ms": 167110.452,
+   "predicted_per_token_ms": 72.75161166739224,
+   "predicted_per_second": 13.745399958585475
+  }
+ },
+ {
+  "name": "kan-35-0",
+  "kind": "kan",
+  "size": [
+   1000,
+   2697
+  ],
+  "seconds": 250.1,
+  "usage": {
+   "completion_tokens": 819,
+   "prompt_tokens": 2622,
+   "total_tokens": 3441,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "timings": {
+   "cache_n": 0,
+   "prompt_n": 2622,
+   "prompt_ms": 190989.739,
+   "prompt_per_token_ms": 72.84124294431732,
+   "prompt_per_second": 13.728486219880116,
+   "predicted_n": 819,
+   "predicted_ms": 58961.821,
+   "predicted_per_token_ms": 72.08046577017116,
+   "predicted_per_second": 13.873384270136432
+  }
+ }
+]
