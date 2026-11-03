@@ -1,0 +1,172 @@
+name: Read price images
+
+# 文字で読めない料金表（カラオケ館の画像、まねきねこの一部の PDF）を OCR で読む。
+# 巡回（refresh.yml、04:10）の後に動き、変わった画像だけを読む。CPU で 1 回約 4〜5 分かかるので、並列のジョブに分ける。
+on:
+  workflow_dispatch:
+  schedule:
+    # Daily 07:10 JST (previous day 22:10 UTC)
+    - cron: '10 22 * * *'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/ocr.yml'
+      - 'ocr/**'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ocr-read
+  cancel-in-progress: false
+
+env:
+  LLAMA_TAG: b12063
+  MODEL_REPO: https://huggingface.co/nakanishi08/Qwen3.5-ocr-jp-2b-GGUF/resolve/main
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Python packages
+        run: python -m pip install requests pypdfium2 pillow
+
+      - name: Choose images to read
+        id: plan
+        run: |
+          python ocr/plan.py work
+          python - <<'EOF' >> "$GITHUB_OUTPUT"
+          import json, math
+          targets = json.load(open("work/targets.json", encoding="utf-8"))
+          minutes = sum(t["reads"] for t in targets) * 4.5
+          shards = min(20, math.ceil(minutes / 150)) if targets else 0
+          print("shards=" + json.dumps(list(range(shards))))
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: work
+          path: work
+          retention-days: 2
+
+  read:
+    needs: plan
+    if: needs.plan.outputs.shards != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python packages
+        run: python -m pip install requests pillow
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: work
+          path: work
+
+      - name: Restore model
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: models
+          key: qwen35ocr-jp-2b-q4km-${{ env.LLAMA_TAG }}
+
+      - name: Download model and llama.cpp
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p models
+          curl -fsSL -o models/model.gguf "$MODEL_REPO/qwen35ocr-jp-2b-q4_k_m.gguf"
+          curl -fsSL -o models/mmproj.gguf "$MODEL_REPO/qwen35ocr-jp-2b-mmproj-f16.gguf"
+          curl -fsSL -o llama.tar.gz "https://github.com/ggml-org/llama.cpp/releases/download/$LLAMA_TAG/llama-$LLAMA_TAG-bin-ubuntu-x64.tar.gz"
+          mkdir -p models/llama && tar -xzf llama.tar.gz -C models/llama --strip-components=1
+
+      - name: Check model hashes
+        run: sha256sum -c ocr/models.sha256
+
+      - name: Start OCR server
+        run: |
+          SERVER=$(find models/llama -name llama-server -type f | head -1)
+          LD_LIBRARY_PATH=$(dirname "$SERVER") nohup "$SERVER" -m models/model.gguf --mmproj models/mmproj.gguf \
+            --image-min-tokens 1024 --host 127.0.0.1 --port 11436 -c 8192 -n 4096 -t "$(nproc)" > server.log 2>&1 &
+          for i in $(seq 1 120); do curl -sf http://127.0.0.1:11436/health && break; sleep 5; done
+          curl -sf http://127.0.0.1:11436/health
+
+      - name: Read images
+        run: python ocr/read.py work ${{ matrix.shard }} ${{ strategy.job-total }} reads.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reads-${{ matrix.shard }}
+          path: reads.json
+          retention-days: 2
+
+  publish:
+    needs: [plan, read]
+    if: always() && needs.plan.result == 'success' && needs.plan.outputs.shards != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: reads-*
+          path: reads
+
+      - name: Store results
+        run: python ocr/merge.py reads/*/reads.json
+
+      - name: Convert prices to amounts
+        run: node scripts/convert.mjs
+
+      - name: Check amounts
+        run: node --test tests/amounts.test.mjs
+
+      - name: Build compressed files
+        run: python scripts/publish.py
+
+      - name: Commit data
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add source/ocr.json dist
+          if git diff --cached --quiet; then
+            echo "No data changes"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "data: read price images"
+          git pull --rebase origin main
+          git push origin HEAD:main
