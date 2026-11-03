@@ -314,6 +314,10 @@ class ParsingTests(unittest.TestCase):
         moved = "（新）〒430-0906 静岡県浜松市中央区住吉4-14-5　　（旧）〒430-0906 静岡県浜松市中区住吉4-14-5"
         shop = module.parse_joyjoy(url, page % ("住吉店", moved))
         self.assertEqual(shop["address"], "静岡県浜松市中央区住吉4-14-5")
+        self.assertEqual(shop["reserve"], "")
+        gadget = """<script data-hpg-hpds-jcode="{'J001248996': 'null'}" src="hpds_variable_pc.js"></script>"""
+        shop = module.parse_joyjoy(url, page % ("笹島店", "名古屋市中村区名駅4丁目27-7") + gadget)
+        self.assertEqual(shop["reserve"], "https://www.hotpepper.jp/strJ001248996/yoyaku/hpds/")
 
     def test_club_dam_reads_title_and_either_map_form(self):
         url = "https://karaokeclub.jp/shop/x/"

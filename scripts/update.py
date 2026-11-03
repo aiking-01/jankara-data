@@ -35,6 +35,8 @@ BANBAN_BASE = "https://karaoke-shin.jp"
 BANBAN_LINK = re.compile(r'href="(https://karaoke-shin\.jp/shop-list/\d+\.html)">カラオケBanBan')
 JOYJOY_BASE = "https://www.joyjoy.co.jp"
 JOYJOY_LINK = re.compile(r"/store/view/([A-Za-z0-9_-]+)")
+# 一部の店だけホットペッパーの予約窓口を載せている。ほかの店は電話予約のみ
+JOYJOY_HOTPEPPER = re.compile(r"data-hpg-hpds-jcode=\"\{'J(\d+)'")
 JOYJOY_POSTAL = {
     "長野県": ("38", "39"), "山梨県": ("40",), "静岡県": ("41", "42", "43"),
     "愛知県": ("44", "45", "46", "47", "48", "49"), "岐阜県": ("50",), "三重県": ("51",), "滋賀県": ("52",),
@@ -731,7 +733,10 @@ def parse_joyjoy(url, markup):
             return None
         text = prefecture + text
     slug = url.rsplit("/", 1)[1]
-    return shop_data("JOYJOY", f"jj-{slug}", name.group(1), text, lat.group(1), lng.group(1), url)
+    hotpepper = JOYJOY_HOTPEPPER.search(markup)
+    reserve = f"https://www.hotpepper.jp/strJ{hotpepper.group(1)}/yoyaku/hpds/" if hotpepper else ""
+    return shop_data("JOYJOY", f"jj-{slug}", name.group(1), text, lat.group(1), lng.group(1), url,
+                     reserve=reserve)
 
 
 def joyjoy_shops(session, previous, delay):
@@ -747,6 +752,8 @@ def joyjoy_shops(session, previous, delay):
         slugs.update(dict.fromkeys(JOYJOY_LINK.findall(resp.text)))
     if not slugs:
         raise ValueError("JOYJOY area pages contained no store links")
+    # 予約窓口は後から載ることがあるので、まだない店は毎回読み直す
+    previous = [shop for shop in previous if shop.get("reserve")]
     shops = details([f"{JOYJOY_BASE}/store/view/{slug}" for slug in slugs], parse_joyjoy,
                     previous, session, delay, allow_unlisted=True, pacer=pacer)
     # The same page is linked under more than one spelling of its slug
