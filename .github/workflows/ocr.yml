@@ -150,4 +150,6 @@ jobs:
       # 読んでいる間に refresh.yml が dist を更新していることがある。読んだ結果だけ先に積み、
       # 最新の料金表から dist を作り直してプッシュする。プッシュの直前に main が進んでも作り直して再試行する
       - name: Publish results
-        run: bash scripts/push_data.sh "data: read price images" source/ocr.json
+        shell: bash
+        run: |
+          bash scripts/push_data.sh "data: read price images" source/ocr.json

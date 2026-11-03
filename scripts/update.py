@@ -393,14 +393,22 @@ def parse_kan(url, markup):
 
 
 def parse_maneki(url, markup):
-    title = re.search(r"<title>\s*([^｜|<]+)", markup)
-    coords = re.search(r"ll=([0-9]{2}\.[0-9]+),(1[0-9]{2}\.[0-9]+)", markup)
-    if not title or not coords:
+    """Skip shops still being prepared; read pages without a map link from their structured data."""
+    if re.search(r"businessHoursRow__time\">\s*準備中", markup):
         return None
+    title = re.search(r"<title>\s*([^｜|<]+)", markup)
+    coords = (re.search(r"ll=([0-9]{2}\.[0-9]+),(1[0-9]{2}\.[0-9]+)", markup)
+              or re.search(r'"latitude":\s*([0-9]{2}\.[0-9]+),\s*"longitude":\s*(1[0-9]{2}\.[0-9]+)', markup))
+    if not title or not coords:
+        raise ValueError("Shop page format changed")
     name = normalize(title.group(1))
     query = re.search(r'''maps[^"']*?[?&;]q=([^"'&]+)''', markup)
-    address = unquote(query.group(1)).replace("+", " ") if query else ""
-    address = re.sub(rf"^.*?{re.escape(name)}\s*", "", address)
+    if query:
+        address = unquote(query.group(1)).replace("+", " ")
+        address = re.sub(rf"^.*?{re.escape(name)}\s*", "", address)
+    else:
+        listed = re.search(r"住所</dt>\s*<dd>\s*(?:<span>〒[^<]*</span>\s*<br>\s*)?<span>([^<]+)</span>", markup)
+        address = normalize(listed.group(1)) if listed else ""
     hours = re.search(r"営業時間</[^>]+>\s*(?:<[^>]+>\s*)*((?:\d|24時間)[^<]{2,40})", markup)
     return shop_data("まねきねこ", "mn-" + url.rstrip("/").split("/")[-1], name,
                      address, coords.group(1), coords.group(2), url,
@@ -777,7 +785,8 @@ def update_chains(delay=DELAY):
                     raise ValueError("Karaoke-kan sitemap contains no store URLs")
                 current = details(urls, parse_kan, previous, session, delay)
             elif chain == "まねきねこ":
-                current = details(maneki_urls(session, delay), parse_maneki, previous, session, delay)
+                current = details(maneki_urls(session, delay), parse_maneki, previous, session, delay,
+                                  allow_unlisted=True)
             elif chain == "JOYSOUND":
                 current = joysound_shops(session, previous, delay)
             elif chain == "コート・ダジュール":

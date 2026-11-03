@@ -219,6 +219,25 @@ class ParsingTests(unittest.TestCase):
                     )
         self.assertEqual(len(shops), 11)
 
+    def test_maneki_page_without_map_link_and_shop_in_preparation(self):
+        url = "https://www.karaokemanekineko.jp/locations/yamaguchi/yanai/yanai-store/"
+        markup = """<title>柳井店｜カラオケまねきねこ</title>
+            "geo": {"@type": "GeoCoordinates", "latitude": 33.962268, "longitude": 132.108396}
+            <dt>住所</dt>
+            <dd>
+                <span>〒742-0031</span><br>
+                <span>山口県柳井市南町 4-2-18</span>
+            </dd>
+            <dt>営業時間</dt><dd><span class="storeDetail__businessHoursRow__time">
+                10:00～翌5:00</span></dd>"""
+        shop = module.parse_maneki(url, markup)
+        self.assertEqual(shop["id"], "mn-yanai-store")
+        self.assertEqual(shop["address"], "山口県柳井市南町4-2-18")
+        self.assertEqual((shop["lat"], shop["lng"]), (33.962268, 132.108396))
+        self.assertIsNone(module.parse_maneki(url, markup.replace("10:00～翌5:00", "準備中")))
+        with self.assertRaises(ValueError):
+            module.parse_maneki(url, markup.replace("latitude", "x"))
+
     def test_banban_page(self):
         url = "https://karaoke-shin.jp/shop-list/00123.html"
         markup = """<title> カラオケBanBan 八雲店 | 店舗</title>
