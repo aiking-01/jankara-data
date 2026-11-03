@@ -1,6 +1,6 @@
 // ビッグエコーの公式料金表 (parseBigEcho の sections) を engine.js の regular / solo の形へ変換する。DOM に依存しない。
 // 誤った金額を出さないことを最優先にする。確実に読めない表は使わず、店ごと読めなければ公式の料金表へ案内する。
-// 対象は 30 分料金だけ。フリータイムとパックは表記の例外が多く、条件を取り違えやすいので計算しない。
+// 30 分料金に加え、名前と時間帯と最終受付を確かめられたフリータイムとパックも読む。条件付きのプランは読まない。
 
 const WEEK = ['月', '火', '水', '木', '金', '土', '日'];
 const ALL_DAYS = [...WEEK, '祝', '祝前'];
@@ -334,6 +334,8 @@ function fixedName(section) {
   const free = FREE_NAME.exec(label);
   if (pack && free) return null; // 1 つの表に両方の名前があると、どちらの料金か決められない
   if (pack) return `${pack[1]}時間パック`;
+  // 「10:00～19:00の間の3時間」は時間帯の中で使える時間の決まったパック。フリータイムとして読むと長く居るほど安く見える
+  if (/(?<![\d:])\d{1,3}(?:時間|分)|の間/.test(label)) return null;
   if (free) return `${free[1] ?? ''}フリータイム`;
   // 「フリータイム料金」の見出しの下の「OPEN〜19:00」。パックと並ぶ見出しではどちらか決められない
   if (/フリー/.test(heading) && !/パック/.test(heading)) return `${FREE_NAME.exec(heading)?.[1] ?? ''}フリータイム`;

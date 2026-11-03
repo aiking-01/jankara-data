@@ -28,12 +28,15 @@ const KAN_CUSTOMER = {
 const REQUIRED_BAR = /別途ドリンクバー/;
 
 // カラオケ館の 1 つの表。1 行目に時間帯と飲み物の条件、2 行目に区分、その下に曜日ごとの金額が並ぶ
-// 飲み物の条件は、学生の列だけに掛かる見出しを OCR が全部の列に広げることがあり、2 回とも同じ誤りになるので使わない
+// 飲み物の条件は、学生の列だけに掛かる見出しを OCR が全部の列に広げることがあり、2 回とも同じ誤りになるので使わない。
+// 店と時間帯と区分で「ドリンクバー付」と「1ドリンク制」が分かれるので、込みと誤解されないよう公式の表へ案内する
+const UNKNOWN_DRINK = 'ドリンク条件は公式の表で確認';
 function readKanTable(rows) {
   let [first, second, ...body] = rows;
   if (!first || !second || !body.length) return { reason: 'table-shape' };
   const range = RANGE.exec(first[0]?.text ?? '');
   if (!range) return { reason: 'no-range' };
+  if (narrowed(range[1], range[2], first[0].text.slice(range[0].length))) return { reason: 'band-note' };
   // 曜日の列の上の空いた見出しと、1 行目からずれて入った飲み物の見出しは読み飛ばす。
   // 区分の見出しが途中で空いているときは列がずれているので読まない
   const lead = second[0]?.text ?? '';
@@ -68,7 +71,7 @@ function readKanTable(rows) {
   const mapped = dayLabels(columns.map((column) => column.days));
   if (!mapped || mapped.partial || mapped.holidayUnknown) return { reason: 'days' };
   const days = columns.map((column, index) => ({ day: mapped.labels[index], prices: column.prices }));
-  const plan = { name: '30分', hours: `${range[1]}～${range[2]}`, last_entry: '', days, drink: '' };
+  const plan = { name: '30分', hours: `${range[1]}～${range[2]}`, last_entry: '', days, drink: UNKNOWN_DRINK };
   return { plan, requiredBar, start: range[1], end: range[2] };
 }
 
@@ -85,6 +88,23 @@ function spanOf(start, end) {
 const SOLO_NOTE = /★?(会員・一般)?\(?(土・?日・?祝)?[(:]?((?:O?OPEN|\d{1,2}:\d{2})~\d{1,2}:\d{2})?\)?の?、?(?:お一人様|ひとりカラオケ)(?:での?|の)ご利用は上記(?:金額|料金)\+¥(\d{1,3})となります/g;
 const SOLO_WORD = /お一人様|ひとりカラオケ|お?1[人名]様での/;
 const DARTS = /ダーツのご利用は[^★。]*?となります/g;
+
+// 「18:00~2:00(金・祝前日~3:00)(土~4:00)」の括弧は曜日ごとの時刻。帯より広いだけなら、帯の中の金額は変わらない。
+// 「9:00~11:00(土・日・祝~10:00)」のように狭い曜日があると、その曜日の残りは次の帯の金額になるので読まない
+function narrowed(start, end, rest) {
+  const [from, to] = spanOf(start, end);
+  const notes = [...rest.matchAll(/\(([^()]*)\)/g)].map((match) => match[1]);
+  if (rest.replace(/\([^()]*\)/g, '') !== '') return true;
+  for (const note of notes) {
+    const parts = [...note.matchAll(/(\d{1,2}:\d{2})?~(\d{1,2}:\d{2})?/g)];
+    if (!parts.length || parts.some((part) => !part[1] && !part[2])) return true;
+    for (const [, noteFrom, noteTo] of parts) {
+      if (noteFrom && minutesOf(noteFrom) > from) return true;
+      if (noteTo && spanOf(start, noteTo)[1] < to) return true;
+    }
+  }
+  return false;
+}
 
 // 1 人で使うときの上乗せを書いた注記を読む。時間帯が表の区切りと合わない注記や、ほかの上乗せがあれば読まない
 function soloNotes(text, spans) {

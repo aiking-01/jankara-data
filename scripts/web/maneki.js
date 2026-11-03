@@ -106,7 +106,37 @@ function noteAllows(tokens, pair) {
     const [noteFrom, noteTo] = spanOf(wider[1], wider[2]);
     if (noteFrom <= from && noteTo >= to) return true;
   }
-  return (HARMLESS_NOTE.test(note) && !CHANGES_PRICE.test(note)) || onlyHours(note);
+  return (HARMLESS_NOTE.test(note) && !CHANGES_PRICE.test(note)) || (onlyHours(note) && notNarrower(note, pair));
+}
+
+// 注記の時刻が帯より狭ければ、その曜日は帯の一部で店が開いていないか 30 分料金を受け付けない。
+// 「※月~金・祝前は13時OPEN」「※日~木・祝は5時CLOSE」「※平日は14:00~18:00」は読まない
+const NOTE_TIME = /(翌?)(\d{1,2})(?::(\d{2})|時(?!間))/g;
+const ONLY_OTHER_PLAN = /パックのみ|パックとなります|のみの受付|最終受付|受付時間/;
+function notNarrower(note, pair) {
+  // フリータイムの説明に混ざった上乗せ（「時間制+110円フリータイム…」）も金額を変える
+  if (ONLY_OTHER_PLAN.test(note) || CHANGES_PRICE.test(note) || /円/.test(note)) return false;
+  const text = note.replace(OTHER_PLANS, '');
+  const [from, to] = spanOf(pair[0].text, pair[1].text);
+  // 「18:00まで営業」は夜の帯がない日。帯の始まりと同じ時刻で終わるなら狭い
+  const endOf = (clock) => (clockOf(clock) === from % 1440 && !clock.startsWith('翌') ? from : spanOf(pair[0].text, clock)[1]);
+  const times = [...text.matchAll(NOTE_TIME)].map((match) => ({
+    clock: `${match[1]}${match[2]}:${match[3] ?? '00'}`, index: match.index, end: match.index + match[0].length,
+  }));
+  for (let i = 0; i < times.length; i += 1) {
+    const time = times[i];
+    const next = times[i + 1];
+    const before = text.slice(0, time.index);
+    const after = text.slice(time.end);
+    // 2 つ並んだ時刻は始まりと終わり。「18:0023:00」のように区切りが抜けることがある
+    if (next && /^[~～]?$/.test(text.slice(time.end, next.index))) {
+      if (clockOf(time.clock) > from % 1440 || endOf(next.clock) < to) return false;
+      i += 1;
+    } else if (/^(?:OPEN|[~～](?!\d)|より|から)/.test(after) && !/[~～]$/.test(before)) {
+      if (clockOf(time.clock) > from % 1440) return false;
+    } else if (endOf(time.clock) < to) return false;
+  }
+  return true;
 }
 
 // フリータイムやパックだけの説明を除くと、曜日と時刻しか残らない注記か。帯の時刻が曜日で変わるだけで、金額は変わらない。

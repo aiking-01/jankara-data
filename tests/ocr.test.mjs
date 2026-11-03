@@ -20,7 +20,7 @@ test('カラオケ館: 2 回の読み取りが同じなら時間帯ごとの金�
   const [first, second] = result.regular[0].plans;
   assert.equal(first.hours, '9:00～19:00');
   assert.deepEqual(first.days[0].prices, { 学生会員: 150, 学生: 150, 会員: 170, 一般: 226 });
-  assert.equal(first.drink, '');
+  assert.equal(first.drink, 'ドリンク条件は公式の表で確認');
   assert.equal(second.hours, '19:00～6:00');
   assert.equal(second.days[1].prices.一般, 640);
   assert.deepEqual(result.solo, []);
@@ -68,4 +68,13 @@ test('カラオケ館: 区分の見出しを 2 回繰り返して後ろが空の
   const shifted = table('19:00~6:00', '1ドリンク制', ['学生', '会員', '学生', '会員'],
     [['月~木', '¥275', '¥380', '¥506', ''], ['金・土・日<br>祝・祝前日', '¥350', '¥480', '¥640', '']]);
   assert.ok(convertKanOcr([page(day, shifted), page(day, shifted)]).reason);
+});
+
+test('カラオケ館: 曜日によって帯が狭くなる表は読まず、広くなるだけの表は読む', () => {
+  const wider = page(day, night.replace('19:00~6:00', '19:00~6:00<br>(金・土・祝前日~7:00)'));
+  assert.equal(convertKanOcr([wider, wider]).regular[0].plans[1].hours, '19:00～6:00');
+  const shorter = page(day.replace('9:00~19:00', '9:00~19:00<br>(土・日・祝~18:00)'), night);
+  assert.equal(convertKanOcr([shorter, shorter]).reason, 'band-note');
+  const later = page(day.replace('9:00~19:00', '9:00~19:00<br>(月~金10:00~)'), night);
+  assert.equal(convertKanOcr([later, later]).reason, 'band-note');
 });
