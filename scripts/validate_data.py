@@ -168,9 +168,21 @@ def _identity(old, new, key, issues):
     if old.get("chain") != new.get("chain") and "chain" in old:
         issues.append(f"{key}: 同じ ID でチェーンが変化")
     if old.get("prefecture") and new.get("prefecture") != old.get("prefecture"):
-        issues.append(f"{key}: 同じ ID で都道府県が変化")
+        # Remove a previously leaked postal mark (CLUB DAM 黒磯店 etc.)
+        # without treating the correction as a cross-prefecture relocation.
+        before = str(old["prefecture"]).lstrip("〒").strip()
+        if before != new.get("prefecture"):
+            issues.append(f"{key}: 同じ ID で都道府県が変化")
     if _distance_km(old, new) > 10:
         issues.append(f"{key}: 同じ ID の座標が10km以上移動")
+    old_address, new_address = old.get("address"), new.get("address")
+    if isinstance(old_address, str) and isinstance(new_address, str):
+        before = old_address.lstrip("〒").replace(" ", "").replace("　", "")
+        after = new_address.lstrip("〒").replace(" ", "").replace("　", "")
+        if before and after and before != after:
+            ratio = difflib.SequenceMatcher(a=before, b=after).ratio()
+            if ratio < 0.42 and _distance_km(old, new) < 1:
+                issues.append(f"{key}: 同じ座標で住所が大きく変化 ({old_address!r} → {new_address!r})")
     first, second = old.get("name"), new.get("name")
     if isinstance(first, str) and isinstance(second, str) and first and second and first != second:
         ratio = difflib.SequenceMatcher(a=unicodedata.normalize("NFKC", first),
@@ -423,6 +435,8 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
         for key in raw[kind]:
             if key in known and known[key].get("chain") != group:
                 issues.append(f"{kind}/{key}: 店舗一覧とチェーンが矛盾")
+            elif key not in known and key not in _records(_json_bytes(_old_bytes(reference, RAW[kind]), RAW[kind]), kind):
+                issues.append(f"{kind}/{key}: 店舗一覧にない新規料金レコード")
     for key, row in raw["ocr"].items():
         if key in known and known[key].get("chain") != row.get("chain"):
             issues.append(f"ocr/{key}: 店舗一覧とチェーンが矛盾")
