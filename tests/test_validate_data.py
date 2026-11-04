@@ -133,7 +133,7 @@ class RawAndPublishedTests(unittest.TestCase):
 
     def test_ocr_output_without_table_rejected(self):
         issues = []
-        v._ocr({"chain": "カラオケ館", "reads": ["Gateway timeout"], "url": "https://karaokekan.net/x"},
+        v._ocr({"chain": "カラオケ館", "reads": ["Gateway timeout and this is not a price table"], "url": "https://karaokekan.net/x"},
                None, "kan-1", issues)
         self.assertTrue(any("料金表 HTML" in issue for issue in issues))
 
