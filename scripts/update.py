@@ -372,7 +372,8 @@ def shop_data(chain, ident, name, address, lat, lng, url, hours="", reserve=""):
     if not (20 <= latitude <= 46.5 and 122 <= longitude <= 154.5):
         return None
     address = unicodedata.normalize("NFKC", html_lib.unescape(unquote(address)))
-    address = re.sub(r"〒?\d{3}-\d{4}", "", address)
+    address = re.sub(r"〒?\s*\d{3}-\d{4}", "", address)
+    address = re.sub(r"^\s*〒\s*", "", address)
     address = re.sub(r"(?<=\d)[−ー](?=\d)", "-", address)
     address = re.sub(r"<br\s*/?>", "", address, flags=re.I)
     address = re.sub(r"\s+", "", address)
@@ -767,7 +768,7 @@ def parse_clubdam(url, markup):
     embed = re.search(r"!2d(1\d{2}\.\d+)!3d(\d{2}\.\d+)", markup)
     if embed and not latlng:
         latlng = embed.group(2), embed.group(1)
-    address = re.search(r"住所：</dt>\s*<dd>\s*(?:〒[\d-]+)?(?:&nbsp;)?\s*([^<]+)", markup)
+    address = re.search(r"住所：</dt>\s*<dd>\s*(?:〒(?:\s|&nbsp;)*\d{3}-\d{4})?(?:&nbsp;)?\s*([^<]+)", markup)
     if not all((title, latlng, address)):
         return None
     name = unicodedata.normalize("NFKC", html_lib.unescape(title.group(1)))
