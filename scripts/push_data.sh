@@ -7,7 +7,7 @@
 # 後からプッシュする側は rebase でぶつかる。元データはワークフローごとに別のファイルなのでぶつからない。
 # そこで元データだけを先に積み、プッシュに失敗したら dist を捨てて、相手の結果を含む最新の上で作り直す。
 # 金額の確認に通らなければ、何もプッシュせずに失敗する。
-# publish.py が前回のファイルを残した（店の数の急減）ときは、プッシュしたうえで失敗として終える。
+# publish.py が失敗した場合も一切プッシュしない。
 set -euo pipefail
 
 message=$1
@@ -16,6 +16,9 @@ ATTEMPTS=5
 
 git config user.name "github-actions[bot]"
 git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+# Validate working tree before even creating a local source-data commit.
+python scripts/validate_data.py --stage sources --baseline HEAD
 
 git add -- "$@"
 git diff --cached --quiet || git commit -q -m "$message"
@@ -26,8 +29,10 @@ for attempt in $(seq 1 "$ATTEMPTS"); do
 
   node scripts/convert.mjs
   node --test tests/amounts.test.mjs tests/ocr.test.mjs
-  published=0
-  python scripts/publish.py || published=$?
+  # Validate against latest main; scripts and OCR runs share the same gate.
+  python scripts/validate_data.py --stage full --baseline origin/main
+  # Publish must succeed completely: never push partial/old manifest data.
+  python scripts/publish.py
 
   git add dist
   built=0
@@ -38,7 +43,7 @@ for attempt in $(seq 1 "$ATTEMPTS"); do
 
   if git push -q origin HEAD:main; then
     echo "pushed on attempt $attempt"
-    exit "$published"
+    exit 0
   fi
 
   echo "::warning::main moved during the push (attempt $attempt); rebuilding dist on the latest data"
