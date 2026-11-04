@@ -329,6 +329,21 @@ class ParsingTests(unittest.TestCase):
             self.assertEqual((shop["lat"], shop["lng"]), (33.95, 131.24))
         self.assertIsNone(module.parse_clubdam(url, page % ""))
 
+    def test_club_dam_postal_whitespace_is_removed(self):
+        url = "https://karaokeclub.jp/shop/kuroiso/"
+        postal_forms = (
+            "〒 325-0013&nbsp;", "〒&nbsp;325-0013&nbsp;",
+            "〒325-0013&nbsp;", "〒　３２５－００１３　", "〒",
+        )
+        for postal in postal_forms:
+            with self.subTest(postal=postal):
+                page = ('<title>カラオケＣＬＵＢ ＤＡＭ &nbsp; カラオケＣＬＵＢ ＤＡＭ 黒磯店</title>'
+                        f'?ll=36.965419,140.067155<dt>住所：</dt><dd>{postal}栃木県那須塩原市鍋掛1086-202</dd>')
+                shop = module.parse_clubdam(url, page)
+                self.assertEqual(shop["name"], "黒磯店")
+                self.assertEqual(shop["prefecture"], "栃木県")
+                self.assertEqual(shop["address"], "栃木県那須塩原市鍋掛1086-202")
+
     def test_utahiroba_page(self):
         url = "https://www.utahiro.com/shops/detail/1"
         markup = """<title> 新宿三丁目店｜歌広場</title>!2d139.7!3d35.6
