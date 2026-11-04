@@ -70,6 +70,8 @@ def parse_table(table) -> dict:
     if not band and title:
         band = clean(title.get_text(" ").split("ドリンク")[0])
     customers = [clean(th.get_text()) for th in table.select("th.attribute")]
+    if not customers or len(customers) != len(set(customers)):
+        raise PageError("料金表の区分見出しが欠損または重複しています")
 
     plans = []
     plan = None
@@ -92,6 +94,8 @@ def parse_table(table) -> dict:
         cells = row.find_all("td", class_="price")
         if plan is None or not cells:
             continue
+        if len(cells) != len(customers):
+            raise PageError(f"料金表の列数が不一致: {len(customers)} 区分 / {len(cells)} 金額")
         day = row.find("td", class_=["wd", "hd"])
         plan["days"].append(
             {
@@ -122,8 +126,12 @@ def parse_sjk_table(section) -> dict:
         hours, _, last_entry = " ".join(clean(p.get_text()) for p in cell.find_all("p")).partition("最終受付")
         days = [clean(d.get_text()) for d in course.select(
             ".sjkprice__cell--blue, .sjkprice__cell--pink")]
-        prices = list(map(parse_price, course.find_next_sibling(
-            class_="sjkprice__wrapper--price").select(".sjkprice__cell--price")))
+        price_row = course.find_next_sibling(class_="sjkprice__wrapper--price")
+        if price_row is None or not customers or not days:
+            raise PageError("スーパージャンカラの料金表の見出し・金額がありません")
+        prices = list(map(parse_price, price_row.select(".sjkprice__cell--price")))
+        if len(prices) != len(days) * len(customers):
+            raise PageError(f"スーパージャンカラの列数が不一致: 予想 {len(days) * len(customers)} / 実際 {len(prices)}")
         plans.append({
             "name": own_text(cell),
             "hours": hours.strip(),
