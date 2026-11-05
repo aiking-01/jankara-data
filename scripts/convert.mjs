@@ -20,6 +20,16 @@ function isEmpty(value) {
 }
 
 mkdirSync(join(ROOT, 'build'), { recursive: true });
+// コート・ダジュールは公式ページと同じ料金JSONを保持し、取得用メタデータだけを外す。
+const coteSource = JSON.parse(readFileSync(join(ROOT, 'source', 'cotedazur_prices.json'), 'utf8'));
+const coteShops = {};
+for (const [id, shop] of Object.entries(coteSource.shops)) {
+  const { page, etag, last_modified, checked_at, ...officialData } = shop;
+  coteShops[id] = officialData;
+}
+writeFileSync(join(ROOT, 'build', 'cotedazur.json'), JSON.stringify({ updated_at: coteSource.updated_at, shops: coteShops }));
+console.log(`cotedazur: ${Object.keys(coteShops).length} shops`);
+
 for (const [name, [file, convert]] of Object.entries(TARGETS)) {
   const source = JSON.parse(readFileSync(join(ROOT, 'source', file), 'utf8'));
   const shops = {};

@@ -12,6 +12,7 @@ GitHub Actions が毎日 04:10（日本時間）に各チェーンの公式サ�
 | `jankara.json.xz` | ジャンカラの料金 |
 | `bigecho.json.xz` | ビッグエコーの金額（変換できた店だけ） |
 | `maneki.json.xz` | まねきねこの金額（変換できた店だけ） |
+| `cotedazur.json.xz` | コート・ダジュールの店舗別料金プラン（公式JSON） |
 
 通信量を抑えるため、アプリは毎日 `manifest.json` だけを読み、sha256 が変わったファイルだけをダウンロードします。
 確認日時は `manifest.json` にあり、確認できなかった店にだけ店ごとの `checked_at` が残ります。
@@ -24,6 +25,10 @@ GitHub Actions が毎日 04:10（日本時間）に各チェーンの公式サ�
 - `scripts/convert.mjs` が料金表を金額へ変換し、読めない表は配りません。
 - `scripts/publish.py` が xz で圧縮して `dist/` に置きます。店の数が 1 割以上減ったファイルは前回のものを残します。
 - `scripts/web/bigecho.js` はアプリ本体と同じものです。変更するときは両方を直します。
+
+コート・ダジュールの店舗ページは `pricelist.js` から `/public/{shop_code}_price.json` を読み込んで料金表を表示します。`scripts/update_cotedazur_prices.py` はこの公式JSONを毎日取得し、ETag による変更確認と金額検査を行います。公開データは `cotedazur.json.xz` です。
+
+2026-11-05 時点では 78 店中 77 店に料金JSONがあり、高砂店（10457）は公式スクリプトが画像を代替表示します。画像から料金を推測しないため、この1店は料金データから除外し、店舗一覧と公式リンクには残します。JSONが後から公開されれば自動で取り込みます。
 
 ## 安全な更新とデータの異常検査
 

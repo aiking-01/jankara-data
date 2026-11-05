@@ -7,8 +7,9 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-FILES = ("chains.json", "source/prices.json", "source/chain_prices.json", "source/maneki_prices.json")
-CLOCK_KEYS = {"updated_at", "checked_at"}
+FILES = ("chains.json", "source/prices.json", "source/chain_prices.json", "source/maneki_prices.json",
+         "source/cotedazur_prices.json")
+CLOCK_KEYS = {"updated_at", "checked_at", "etag", "last_modified"}
 
 
 def without_clock(value):

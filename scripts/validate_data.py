@@ -27,10 +27,11 @@ RAW = {
     "chain_prices": "source/chain_prices.json",
     "maneki_prices": "source/maneki_prices.json",
     "ocr": "source/ocr.json",
+    "cotedazur_prices": "source/cotedazur_prices.json",
 }
 BUILT = {"chains": RAW["chains"], "jankara": RAW["prices"],
          "bigecho": "build/bigecho.json", "maneki": "build/maneki.json",
-         "kan": "build/kan.json"}
+         "kan": "build/kan.json", "cotedazur": "build/cotedazur.json"}
 PREFIX = {
     "ビッグエコー": ("be-", "shop.big-echo.jp"),
     "カラオケ館": ("kan-", "karaokekan.jp"),
@@ -43,10 +44,12 @@ PREFIX = {
     "CLUB DAM": ("dam-", "karaokeclub.jp"),
     "歌広場": ("uh-", "www.utahiro.com"),
 }
-CLOCK = {"updated_at", "checked_at", "changed_at"}
+CLOCK = {"updated_at", "checked_at", "changed_at", "etag", "last_modified"}
 JAPANESE_REGION = re.compile(r"^(?:北海道|東京都|大阪府|京都府|.{2,3}県)")
 NO_HTML = re.compile(r"<(?:html|body|title|script|div|h[1-6]|!doctype)\b|(?:502 Bad Gateway|Access Denied|404 Not Found)", re.I)
 PRICE_TEXT = re.compile(r"^(?:[¥￥]?\s*)?(\d{1,3}(?:,\d{3})*|\d+)(?:\s*円)?$")
+COTE_PRICE_FIELD = re.compile(r"(?:_30|_tax|_normal|_student|_ordinary)$|^ftfd_")
+COTE_PRICE_GROUPS = ("noon_weekday", "noon_weekend", "night_weekday", "night_weekend")
 MAX_ISSUES = 40
 
 
@@ -355,6 +358,84 @@ def _maneki_raw(item, old, key, issues):
         issues.append(f"{key}: PDF の配布元が不正")
 
 
+def _cotedazur_prices(item, old, key, issues):
+    if not key.startswith("cd-") or type(item.get("shop_code")) is not int or str(item["shop_code"]) != key.removeprefix("cd-"):
+        issues.append(f"{key}: 店舗コードと料金IDが一致しません")
+    if not _string(item.get("shop_name"), 120):
+        issues.append(f"{key}: 料金JSONの店舗名が不正")
+    plans = item.get("price_plan")
+    if not isinstance(plans, list) or not plans or len(plans) > 30:
+        issues.append(f"{key}: price_plan が空、または形式が不正")
+        return
+
+    for index, plan in enumerate(plans):
+        if not isinstance(plan, dict) or not isinstance(plan.get("label_name"), str):
+            issues.append(f"{key}.price_plan[{index}]: 料金期間が不正")
+            continue
+        for group in COTE_PRICE_GROUPS:
+            rows = plan.get(group)
+            if rows is not None and (not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows)):
+                issues.append(f"{key}.price_plan[{index}].{group}: 料金行が不正")
+
+    values = {}
+    has_30_minute_price = False
+
+    def visit(value, path="price_plan"):
+        nonlocal has_30_minute_price
+        if isinstance(value, dict):
+            for field, child in value.items():
+                child_path = f"{path}.{field}"
+                if COTE_PRICE_FIELD.search(field):
+                    if child is None or (isinstance(child, str) and child.strip() in ("", "-", "ー", "－")):
+                        continue
+                    if isinstance(child, bool):
+                        issues.append(f"{key}.{child_path}: 金額が boolean です")
+                        continue
+                    normalized = unicodedata.normalize("NFKC", str(child)).replace(",", "").strip()
+                    if not re.fullmatch(r"\d+", normalized):
+                        issues.append(f"{key}.{child_path}: 金額の形式が不正 ({child!r})")
+                        continue
+                    amount = int(normalized)
+                    limit = 20000 if field.endswith("_30") else 100000
+                    if amount > limit:
+                        issues.append(f"{key}.{child_path}: 金額の上限を超えています ({amount})")
+                        continue
+                    values[child_path] = amount
+                    if field.endswith("_30"):
+                        has_30_minute_price = True
+                elif isinstance(child, (dict, list)):
+                    visit(child, child_path)
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                visit(child, f"{path}[{index}]")
+
+    visit(plans)
+    if not has_30_minute_price:
+        issues.append(f"{key}: 30分料金がありません")
+    if old:
+        before = {}
+        # Older records may include fetch metadata that is absent from dist.
+        def old_visit(value, path="price_plan"):
+            if isinstance(value, dict):
+                for field, child in value.items():
+                    child_path = f"{path}.{field}"
+                    if COTE_PRICE_FIELD.search(field):
+                        if child is None or (isinstance(child, str) and child.strip() in ("", "-", "ー", "－")):
+                            continue
+                        normalized = unicodedata.normalize("NFKC", str(child)).replace(",", "").strip()
+                        if re.fullmatch(r"\d+", normalized):
+                            before[child_path] = int(normalized)
+                    elif isinstance(child, (dict, list)):
+                        old_visit(child, child_path)
+            elif isinstance(value, list):
+                for index, child in enumerate(value):
+                    old_visit(child, f"{path}[{index}]")
+        old_visit(old.get("price_plan", []))
+        if before and len(values) < len(before) * 0.65:
+            issues.append(f"{key}: 料金セルが大量に欠落")
+        _price_delta(before, values, key, issues)
+
+
 def _ocr(item, old, key, issues):
     if item.get("chain") not in ("カラオケ館", "まねきねこ"):
         issues.append(f"{key}: OCR チェーンが不正")
@@ -434,6 +515,8 @@ def _validate_doc(name, current, previous, issues):
             if not key.startswith("mn-"):
                 issues.append(f"{key}: まねきねこ以外の料金情報")
             _maneki_raw(item, was, key, issues)
+        elif name in ("cotedazur_prices", "cotedazur"):
+            _cotedazur_prices(item, was, key, issues)
         elif name == "ocr":
             _ocr(item, was, key, issues)
         else:
@@ -450,7 +533,8 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
         raw[name], changes = _validate_doc(name, current, previous, issues)
         summary.append(f"{name}: {len(raw[name])} 件 (変更 {changes} 件)")
     known = raw["chains"]
-    for kind, group in (("chain_prices", "ビッグエコー"), ("maneki_prices", "まねきねこ")):
+    for kind, group in (("chain_prices", "ビッグエコー"), ("maneki_prices", "まねきねこ"),
+                        ("cotedazur_prices", "コート・ダジュール")):
         for key in raw[kind]:
             if key in known and known[key].get("chain") != group:
                 issues.append(f"{kind}/{key}: 店舗一覧とチェーンが矛盾")
@@ -470,7 +554,8 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
             except lzma.LZMAError as exc:
                 raise DataRejected(f"{name}: 前回の公開 XZ が読み取れません") from exc
             fresh, changes = _validate_doc(name, current, previous, issues)
-            chain = {"bigecho": "ビッグエコー", "maneki": "まねきねこ", "kan": "カラオケ館"}[name]
+            chain = {"bigecho": "ビッグエコー", "maneki": "まねきねこ", "kan": "カラオケ館",
+                     "cotedazur": "コート・ダジュール"}[name]
             for key in fresh:
                 if key not in known or known[key].get("chain") != chain:
                     if key not in _records(previous, name):
