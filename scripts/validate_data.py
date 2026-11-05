@@ -26,11 +26,13 @@ RAW = {
     "prices": "source/prices.json",
     "chain_prices": "source/chain_prices.json",
     "maneki_prices": "source/maneki_prices.json",
+    "megabig_prices": "source/megabig_prices.json",
     "ocr": "source/ocr.json",
     "joyjoy_prices": "source/joyjoy_prices.json",
 }
 BUILT = {"chains": RAW["chains"], "jankara": RAW["prices"],
          "bigecho": "build/bigecho.json", "maneki": "build/maneki.json",
+         "megabig": "build/megabig.json",
          "kan": "build/kan.json", "joyjoy": "build/joyjoy.json"}
 PREFIX = {
     "ビッグエコー": ("be-", "shop.big-echo.jp"),
@@ -43,6 +45,7 @@ PREFIX = {
     "JOYJOY": ("jj-", "www.joyjoy.co.jp"),
     "CLUB DAM": ("dam-", "karaokeclub.jp"),
     "歌広場": ("uh-", "www.utahiro.com"),
+    "メガビッグ": ("mb-", "megakara.jp"),
 }
 CLOCK = {"updated_at", "checked_at", "changed_at"}
 JAPANESE_REGION = re.compile(r"^(?:北海道|東京都|大阪府|京都府|.{2,3}県)")
@@ -366,6 +369,44 @@ def _maneki_raw(item, old, key, issues):
         issues.append(f"{key}: PDF の配布元が不正")
 
 
+def _megabig_raw(item, old, key, issues):
+    sections = item.get("sections")
+    if not isinstance(sections, list) or not sections:
+        issues.append(f"{key}: 料金表がありません")
+        return
+    if old and old.get("sections") and len(sections) < len(old["sections"]) * 0.6:
+        issues.append(f"{key}: メガビッグの料金表が大量欠落")
+    has_slot = False
+    for i, section in enumerate(sections):
+        if not isinstance(section, dict):
+            issues.append(f"{key}: 料金セクションが不正")
+            continue
+        header, rows = section.get("header"), section.get("rows")
+        if not isinstance(header, list) or len(header) < 2 or not isinstance(rows, list):
+            issues.append(f"{key}.sections[{i}]: 表・ヘッダーの形式が変化")
+            continue
+        if any(not isinstance(value, str) for value in header):
+            issues.append(f"{key}.sections[{i}]: 見出しの型が不正")
+        if "30分" in unicodedata.normalize("NFKC", header[0]):
+            has_slot = True
+        if not rows:
+            issues.append(f"{key}.sections[{i}]: 金額行がありません")
+        for row in rows:
+            if (not isinstance(row, list) or len(row) != len(header)
+                    or any(not isinstance(value, str) for value in row)):
+                issues.append(f"{key}.sections[{i}]: 金額の列数が見出しと一致しません")
+                continue
+            for value in row[1:]:
+                match = PRICE_TEXT.fullmatch(unicodedata.normalize("NFKC", value).replace(" ", ""))
+                if not match or int(match[1].replace(",", "")) > 30000:
+                    issues.append(f"{key}.sections[{i}]: 金額が不正 ({value!r})")
+    if not has_slot:
+        issues.append(f"{key}: 30分料金表がありません")
+    page = item.get("page")
+    if page and (urlsplit(page).scheme != "https" or urlsplit(page).hostname != "megakara.jp"):
+        issues.append(f"{key}: 料金ページ URL が異常")
+
+
 def _ocr(item, old, key, issues):
     if item.get("chain") not in ("カラオケ館", "まねきねこ"):
         issues.append(f"{key}: OCR チェーンが不正")
@@ -490,11 +531,11 @@ def _joyjoy(item, old, key, issues, *, require_checked_at=False):
 
 def _validate_doc(name, current, previous, issues, *, allow_empty_old=False):
     fresh = _records(current, name)
-    old = _records(previous, name, allow_empty=allow_empty_old)
+    old = _records(previous, name, allow_empty=allow_empty_old or name in ("megabig_prices", "megabig"))
     old_count, fresh_count = len(old), len(fresh)
     if not allow_empty_old and fresh_count < old_count * (0.95 if name != "ocr" else 0.90):
         issues.append(f"{name}: 店舗数が異常に減少 ({old_count} → {fresh_count})")
-    if not allow_empty_old and fresh_count > old_count * 1.25 + 10:
+    if old_count and not allow_empty_old and fresh_count > old_count * 1.25 + 10:
         issues.append(f"{name}: 店舗数が異常に増加 ({old_count} → {fresh_count})")
     changed = [key for key, value in fresh.items() if _meaning(value) != _meaning(old.get(key))]
     if old_count > 50 and len(changed) > max(20, old_count * 0.35):
@@ -525,6 +566,9 @@ def _validate_doc(name, current, previous, issues, *, allow_empty_old=False):
             if not key.startswith("mn-"):
                 issues.append(f"{key}: まねきねこ以外の料金情報")
             _maneki_raw(item, was, key, issues)
+        elif name == "megabig_prices":
+            if not key.startswith("mb-"): issues.append(f"{key}: メガビッグ以外の料金情報")
+            _megabig_raw(item, was, key, issues)
         elif name == "ocr":
             _ocr(item, was, key, issues)
         elif name in ("joyjoy_prices", "joyjoy"):
@@ -539,13 +583,13 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
     raw = {}
     for name, file in RAW.items():
         current = _json_bytes((ROOT / file).read_bytes(), file)
-        missing_base = name == "joyjoy_prices" and _missing_at_reference(reference, file)
+        missing_base = name in ("joyjoy_prices", "megabig_prices") and _missing_at_reference(reference, file)
         previous = ({"schema_version": 1, "updated_at": 0, "shops": {}} if missing_base
                     else _json_bytes(_old_bytes(reference, file), f"{reference}:{file}"))
         raw[name], changes = _validate_doc(name, current, previous, issues, allow_empty_old=missing_base)
         summary.append(f"{name}: {len(raw[name])} 件 (変更 {changes} 件)")
     known = raw["chains"]
-    for kind, group in (("chain_prices", "ビッグエコー"), ("maneki_prices", "まねきねこ")):
+    for kind, group in (("chain_prices", "ビッグエコー"), ("maneki_prices", "まねきねこ"), ("megabig_prices", "メガビッグ")):
         for key in raw[kind]:
             if key in known and known[key].get("chain") != group:
                 issues.append(f"{kind}/{key}: 店舗一覧とチェーンが矛盾")
@@ -565,7 +609,7 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
                 continue  # raw と同一: 既に検査済み
             current = _json_bytes((ROOT / file).read_bytes(), file)
             old_file = f"dist/{name}.json.xz"
-            missing_base = name == "joyjoy" and _missing_at_reference(reference, old_file)
+            missing_base = name in ("joyjoy", "megabig") and _missing_at_reference(reference, old_file)
             if missing_base:
                 previous = {"schema_version": 1, "updated_at": 0, "shops": {}}
             else:
@@ -575,7 +619,7 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
                 except lzma.LZMAError as exc:
                     raise DataRejected(f"{name}: 前回の公開 XZ が読み取れません") from exc
             fresh, changes = _validate_doc(name, current, previous, issues, allow_empty_old=missing_base)
-            chain = {"bigecho": "ビッグエコー", "maneki": "まねきねこ", "kan": "カラオケ館",
+            chain = {"bigecho": "ビッグエコー", "maneki": "まねきねこ", "kan": "カラオケ館", "megabig": "メガビッグ",
                      "joyjoy": "JOYJOY"}[name]
             for key in fresh:
                 if key not in known or known[key].get("chain") != chain:
