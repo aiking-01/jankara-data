@@ -15,6 +15,7 @@ on:
 
 permissions:
   contents: write
+  issues: write
 
 concurrency:
   group: ocr-read
@@ -125,7 +126,8 @@ jobs:
 
   publish:
     needs: [plan, read]
-    if: always() && needs.plan.result == 'success' && needs.plan.outputs.shards != '[]'
+    # 一部のOCR shardが失敗した際は不完全な読み取り結果を公開しない。
+    if: needs.plan.result == 'success' && needs.read.result == 'success' && needs.plan.outputs.shards != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -153,3 +155,63 @@ jobs:
         shell: bash
         run: |
           bash scripts/push_data.sh "data: read price images" source/ocr.json
+
+  monitor:
+    needs: [plan, read, publish]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Check latest published manifest and XZ integrity
+        id: freshness
+        continue-on-error: true
+        run: python3 scripts/monitor_freshness.py --max-hours 72
+
+      - name: Notify maintainers about OCR failure or recovery
+        id: notification
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PLAN_RESULT: ${{ needs.plan.result }}
+          READ_RESULT: ${{ needs.read.result }}
+          PUBLISH_RESULT: ${{ needs.publish.result }}
+          SHARDS: ${{ needs.plan.outputs.shards }}
+          FRESHNESS_RESULT: ${{ steps.freshness.outcome }}
+        run: |
+          set -euo pipefail
+          failed=0
+          if [[ "$PLAN_RESULT" != "success" || "$FRESHNESS_RESULT" != "success" ]]; then
+            failed=1
+          elif [[ "$SHARDS" != '[]' ]] && \
+               [[ "$READ_RESULT" != "success" || "$PUBLISH_RESULT" != "success" ]]; then
+            failed=1
+          fi
+
+          title='[Data CI] OCR or delivery freshness requires attention'
+          current="$(gh issue list --state open --limit 100 --json number,title \
+            --jq '.[] | select(.title=="[Data CI] OCR or delivery freshness requires attention") | .number' | head -n 1)"
+          if [[ "$failed" == 1 ]]; then
+            body="$(printf 'OCRの失敗・配信manifestの鮮度異常を検出しました。shard未完了の場合は一部のOCRだけを公開しません。\n\n実行ログ: %s\n\nplan=%s / read=%s / publish=%s / manifest=%s\n' \
+              "https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+              "$PLAN_RESULT" "$READ_RESULT" "$PUBLISH_RESULT" "$FRESHNESS_RESULT")"
+            if [[ -z "$current" ]]; then
+              gh issue create --title "$title" --body "$body"
+            else
+              gh issue comment "$current" --body "$body"
+            fi
+          elif [[ -n "$current" ]]; then
+            gh issue comment "$current" --body "OCRと配信manifestを確認しました: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            gh issue close "$current" --reason completed
+          fi
+
+      - name: Fail when OCR or delivery is unhealthy
+        if: steps.notification.outcome == 'failure' || steps.freshness.outcome == 'failure' || needs.plan.result != 'success' || (needs.plan.outputs.shards != '[]' && (needs.read.result != 'success' || needs.publish.result != 'success'))
+        run: |
+          echo "::error::OCR or published manifest is not healthy."
+          exit 1
