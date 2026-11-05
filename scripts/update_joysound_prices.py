@@ -86,6 +86,25 @@ def drink_tag(cell) -> str:
     return ""
 
 
+def official_simple_hours(soup: BeautifulSoup) -> str:
+    """公式ページの営業時間が曜日例外なしの単純な範囲なら返す。
+    LASTに推測時刻を充てないため、注意書き・曜日差分があれば空にする。
+    """
+    lines = [clean(text) for text in soup.stripped_strings]
+    candidates = []
+    for index, value in enumerate(lines[:-1]):
+        if value != "営業時間":
+            continue
+        candidate = lines[index + 1].replace(" ", "")
+        # 24時間営業、曜日別閉店時刻、臨時の例外は安全に断定できない。
+        if not re.fullmatch(r"\d{1,2}:\d{2}[～〜~-]翌?\d{1,2}:\d{2}", candidate):
+            continue
+        if index + 2 < len(lines) and lines[index + 2].startswith(("※", "＊", "*")):
+            continue
+        candidates.append(candidate)
+    return candidates[0] if len(set(candidates)) == 1 else ""
+
+
 def parse_page(html: str, page: str) -> dict:
     soup = BeautifulSoup(html, "html.parser")
     sections = []
@@ -127,7 +146,8 @@ def parse_page(html: str, page: str) -> dict:
 
     if not sections or not any("30分" in row["label"] for section in sections for row in section["rows"]):
         raise ValueError("No standard 30-minute rate tables found")
-    return {"page": page, "scope": SCOPE, "sections": sections, "checked_at": int(time.time())}
+    return {"page": page, "scope": SCOPE, "sections": sections,
+            "opening_hours": official_simple_hours(soup), "checked_at": int(time.time())}
 
 
 def load_json(path: Path, default: dict) -> dict:
