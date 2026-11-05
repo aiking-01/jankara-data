@@ -16,10 +16,10 @@ from pathlib import Path
 
 REQUIRED = ("chains", "jankara", "bigecho", "maneki", "kan")
 # 追加配信は任意。存在する場合には基本5種と同じ完全性検証を行う。
-OPTIONAL = ("joyjoy", "joysound", "cotedazur", "banban", "round1")
+OPTIONAL = ("megabig", "joyjoy", "joysound", "cotedazur", "banban", "round1")
 KNOWN = frozenset(REQUIRED + OPTIONAL)
 # BanBan/ROUND1は目視承認後に更新されるため鮮度ではなく完全性だけ監視。
-REFRESHED = frozenset({"chains", "jankara", "bigecho", "maneki",
+REFRESHED = frozenset({"chains", "jankara", "bigecho", "maneki", "megabig",
                       "joyjoy", "joysound", "cotedazur"})
 
 

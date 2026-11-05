@@ -46,6 +46,11 @@ jobs:
         continue-on-error: true
         run: python scripts/update.py chains
 
+      - name: Update MegaBig shops and prices
+        id: megabig
+        continue-on-error: true
+        run: python scripts/update_megabig.py
+
       - name: Update Jankara prices
         id: jankara
         continue-on-error: true
@@ -76,6 +81,7 @@ jobs:
           [[ "${{ steps.jankara.outcome }}" == "success" ]] && confirmed+=(jankara)
           [[ "${{ steps.bigecho.outcome }}" == "success" ]] && confirmed+=(bigecho)
           [[ "${{ steps.maneki.outcome }}" == "success" ]] && confirmed+=(maneki)
+          [[ "${{ steps.megabig.outcome }}" == "success" ]] && confirmed+=(megabig)
           # 追加PRのステップが存在しない間は空値なので対象へ加えない。
           [[ "${{ steps.joyjoy.outcome }}" == "success" ]] && confirmed+=(joyjoy)
           [[ "${{ steps.joysound.outcome }}" == "success" ]] && confirmed+=(joysound)
@@ -126,7 +132,7 @@ jobs:
           fi
 
       - name: Fail run when a step failed
-        if: steps.chains.outcome == 'failure' || steps.jankara.outcome == 'failure' || steps.bigecho.outcome == 'failure' || steps.maneki.outcome == 'failure' || steps.joyjoy.outcome == 'failure' || steps.joysound.outcome == 'failure' || steps.cotedazur.outcome == 'failure' || steps.publish.outcome == 'failure' || steps.freshness.outcome == 'failure' || steps.notification.outcome == 'failure'
+        if: steps.chains.outcome == 'failure' || steps.megabig.outcome == 'failure' || steps.jankara.outcome == 'failure' || steps.bigecho.outcome == 'failure' || steps.maneki.outcome == 'failure' || steps.joyjoy.outcome == 'failure' || steps.joysound.outcome == 'failure' || steps.cotedazur.outcome == 'failure' || steps.publish.outcome == 'failure' || steps.freshness.outcome == 'failure' || steps.notification.outcome == 'failure'
         run: |
           echo "::error::Refresh/manifest validation or incident notification failed. Published data remains protected."
           exit 1
