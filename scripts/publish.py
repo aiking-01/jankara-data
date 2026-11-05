@@ -24,6 +24,8 @@ SOURCES = {
     "bigecho": ROOT / "build" / "bigecho.json",
     "maneki": ROOT / "build" / "maneki.json",
     "kan": ROOT / "build" / "kan.json",
+    "megabig": ROOT / "build" / "megabig.json",
+    "joyjoy": ROOT / "build" / "joyjoy.json",
 }
 # 前回よりこの割合を下回ったら、取得か変換の異常とみなして前回のファイルを残す
 MIN_RATIO = 0.9
@@ -88,7 +90,7 @@ def publish_file(name: str, document: dict, old: dict | None, dist: Path = DIST,
 
 def main() -> int:
     # sourceの確認日時を時刻だけのコミットにせず、manifestだけ正常巡回を記録する。
-    allowed = {"chains", "jankara", "bigecho", "maneki", "joyjoy", "joysound", "cotedazur"}
+    allowed = {"chains", "jankara", "bigecho", "maneki", "megabig", "joyjoy", "joysound", "cotedazur"}
     raw = os.environ.get("REFRESH_CONFIRMED_DATA", "")
     confirmed = {name for name in raw.split(",") if name}
     if not confirmed.issubset(allowed):
