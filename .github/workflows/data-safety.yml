@@ -2,7 +2,8 @@ name: Validate data safety
 
 on:
   pull_request:
-    branches: [main]
+    # JSON SHAのPRは#9へ積み上げるため、依存ブランチでも回帰検証する。
+    branches: [main, fix/audit05-data-freshness-20261106]
   workflow_dispatch:
 
 permissions:

@@ -105,6 +105,48 @@ class ManifestMonitorTests(unittest.TestCase):
         self.assertTrue(any("未対応のmanifestファイル名" in issue
                             for issue in monitor.inspect(self.path, NOW)))
 
+    def test_json_digest_matches_and_rejects_changed_payload(self):
+        path = self.path / "manifest.json"
+        document = json.loads(path.read_text())
+        data = lzma.decompress((self.path / "chains.json.xz").read_bytes())
+        document["files"]["chains"]["json_sha256"] = hashlib.sha256(data).hexdigest()
+        path.write_text(json.dumps(document))
+        self.assertEqual(monitor.inspect(self.path, NOW), [])
+        document["files"]["chains"]["json_sha256"] = "0" * 64
+        path.write_text(json.dumps(document))
+        self.assertTrue(any("JSONハッシュ" in issue for issue in monitor.inspect(self.path, NOW)))
+
+    def test_compressed_bomb_is_limited_before_json_hashing(self):
+        path = self.path / "manifest.json"
+        document = json.loads(path.read_text())
+        raw = b"x" * 129
+        packed = lzma.compress(raw)
+        (self.path / "chains.json.xz").write_bytes(packed)
+        document["files"]["chains"].update({
+            "sha256": hashlib.sha256(packed).hexdigest(),
+            "json_sha256": hashlib.sha256(raw).hexdigest(),
+            "size": len(packed)
+        })
+        path.write_text(json.dumps(document))
+        with mock.patch.object(monitor, "MAX_JSON_BYTES", 128):
+            issues = monitor.inspect(self.path, NOW)
+        self.assertTrue(any("安全に展開できません" in issue for issue in issues), issues)
+
+    def test_concatenated_xz_streams_are_not_accepted(self):
+        path = self.path / "manifest.json"
+        document = json.loads(path.read_text())
+        raw = b'{"schema_version":1,"shops":[{"id":1}]}'
+        packed = lzma.compress(raw) + lzma.compress(raw)
+        (self.path / "chains.json.xz").write_bytes(packed)
+        document["files"]["chains"].update({
+            "sha256": hashlib.sha256(packed).hexdigest(),
+            "json_sha256": hashlib.sha256(raw).hexdigest(),
+            "size": len(packed)
+        })
+        path.write_text(json.dumps(document))
+        self.assertTrue(any("安全に展開できません" in issue
+                            for issue in monitor.inspect(self.path, NOW)))
+
     def test_corrupted_xz_is_rejected(self):
         (self.path / "maneki.json.xz").write_bytes(b"broken")
         issues = monitor.inspect(self.path, NOW)
