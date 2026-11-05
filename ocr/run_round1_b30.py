@@ -152,7 +152,11 @@ def main() -> int:
     args.status.parent.mkdir(parents=True, exist_ok=True)
     args.status.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(state, ensure_ascii=False), flush=True)
-    return 1 if errors else 0
+    # 承認待ちは正常な定期実行として成功させない。
+    # Actionsは失敗として通知するが、if:always()の成果物は保存される。
+    if pending:
+        print(f"::error::目視承認待ちのROUND1画像: {', '.join(pending)}", flush=True)
+    return 1 if errors or pending else 0
 
 
 if __name__ == "__main__":
