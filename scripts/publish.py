@@ -55,10 +55,14 @@ def compact(document: dict) -> dict:
     return {"schema_version": SHOPS_VERSION, "shops": compacted}
 
 
+def json_bytes(document: dict) -> bytes:
+    # 圧縮前の配信JSONと同じバイト列をハッシュ検証にも使う。
+    return json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
 def encode(document: dict) -> bytes:
-    # key の順序を変えると、アプリが公式の表と比べるときに料金が変わったと誤認する
-    text = json.dumps(document, ensure_ascii=False, separators=(",", ":"))
-    return lzma.compress(text.encode("utf-8"), format=lzma.FORMAT_XZ, check=lzma.CHECK_CRC32, filters=XZ_FILTERS)
+    return lzma.compress(json_bytes(document), format=lzma.FORMAT_XZ,
+                         check=lzma.CHECK_CRC32, filters=XZ_FILTERS)
 
 
 def publish_file(name: str, document: dict, old: dict | None, dist: Path = DIST, *, confirmed_at: int = 0) -> tuple[dict, bool]:
@@ -67,13 +71,16 @@ def publish_file(name: str, document: dict, old: dict | None, dist: Path = DIST,
     if old and count < old["count"] * MIN_RATIO:
         print(f"::error::{name}: 店の数が異常です ({old['count']} -> {count})。前回のファイルを残します", flush=True)
         return old, False
-    data = encode(compact(document))
+    compacted = compact(document)
+    payload = json_bytes(compacted)
+    data = encode(compacted)
     (dist / f"{name}.json.xz").write_bytes(data)
     # 巡回済みでも元データが時刻だけの差分なら select_changes.py が巻き戻す。
     # 検証を通過した正常なRefreshだけ、manifest側の確認日時を進める。
     checked_at = max(document["updated_at"], old["checked_at"] if old else 0, confirmed_at)
     print(f"{name}: {count} 店 {len(data):,} バイト", flush=True)
-    return {"sha256": hashlib.sha256(data).hexdigest(), "size": len(data), "count": count, "checked_at": checked_at}, True
+    return {"sha256": hashlib.sha256(data).hexdigest(), "json_sha256": hashlib.sha256(payload).hexdigest(),
+            "size": len(data), "count": count, "checked_at": checked_at}, True
 
 
 def main() -> int:
