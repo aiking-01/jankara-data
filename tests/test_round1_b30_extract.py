@@ -1,5 +1,12 @@
 """ROUND1 B-30変換の基礎テスト。画像がなくても曜日・区分の対応を検証する。"""
+import json
+import sys
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
+
+from ocr import run_round1_b30 as runner
 
 try:
     from scripts.extract_round1_b30 import ReadError, to_tables
@@ -44,6 +51,36 @@ class TestB30Extract(unittest.TestCase):
         b = self.cell("weekday", "student_slot", "13:00", "18:00", 999)
         with self.assertRaises(ReadError):
             to_tables([a, b])
+
+
+
+class TestRunnerReviewGate(unittest.TestCase):
+    def test_unapproved_target_marks_action_failed_without_publishing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            config = base / "targets.json"
+            output = base / "round1.json"
+            work = base / "work"
+            status = work / "status.json"
+            config.write_text(json.dumps({"schema_version": 1, "shops": {
+                "r1-01234": {
+                    "images": {day: f"https://www.round1.co.jp/{day}.png" for day in runner.DAYS},
+                    "verified": "",
+                }
+            }}), encoding="utf-8")
+            argv = ["run_round1_b30.py", "--config", str(config), "--output", str(output),
+                    "--work", str(work), "--status", str(status)]
+            def fake_fetch(_session, _url, path):
+                path.write_bytes(b"image")
+            with mock.patch.object(sys, "argv", argv), \
+                 mock.patch.object(runner, "fetch_image", side_effect=fake_fetch), \
+                 mock.patch.object(runner, "run_extractor", return_value=None):
+                exit_code = runner.main()
+            self.assertEqual(exit_code, 1)
+            self.assertFalse(output.exists())
+            report = json.loads(status.read_text(encoding="utf-8"))
+            self.assertFalse(report["publish"])
+            self.assertEqual(report["pending"], ["r1-01234"])
 
 
 if __name__ == "__main__":
