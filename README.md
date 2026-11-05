@@ -12,6 +12,7 @@ GitHub Actions が毎日 04:10（日本時間）に各チェーンの公式サ�
 | `jankara.json.xz` | ジャンカラの料金 |
 | `bigecho.json.xz` | ビッグエコーの金額（変換できた店だけ） |
 | `maneki.json.xz` | まねきねこの金額（変換できた店だけ） |
+| `banban.json.xz` | BanBanの通常・ヒトカラ料金（画像で確認できた店舗のみ） |
 
 通信量を抑えるため、アプリは毎日 `manifest.json` だけを読み、sha256 が変わったファイルだけをダウンロードします。
 確認日時は `manifest.json` にあり、確認できなかった店にだけ店ごとの `checked_at` が残ります。
