@@ -60,6 +60,20 @@ def inspect(dist: Path, now: int, max_age_hours: float = 72) -> list[str]:
             issues.append(f"{name}: XZサイズがmanifestと不一致")
         if isinstance(sha, str) and hashlib.sha256(data).hexdigest() != sha:
             issues.append(f"{name}: XZハッシュがmanifestと不一致")
+        # 旧manifestには無い任意フィールド。存在する場合は配信本文と必ず照合する。
+        json_sha = entry.get("json_sha256")
+        if json_sha is not None:
+            if not isinstance(json_sha, str) or len(json_sha) != 64 or any(
+                    c not in "0123456789abcdef" for c in json_sha):
+                issues.append(f"{name}: JSON SHA-256が不正")
+            else:
+                try:
+                    import lzma
+                    expanded = lzma.decompress(data)
+                    if hashlib.sha256(expanded).hexdigest() != json_sha:
+                        issues.append(f"{name}: JSONハッシュがmanifestと不一致")
+                except (lzma.LZMAError, EOFError, ValueError):
+                    issues.append(f"{name}: JSON検証時にXZを展開できません")
     return issues
 
 
