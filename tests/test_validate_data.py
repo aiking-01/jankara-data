@@ -137,6 +137,37 @@ class RawAndPublishedTests(unittest.TestCase):
                None, "kan-1", issues)
         self.assertTrue(any("料金表 HTML" in issue for issue in issues))
 
+    def test_converted_big_echo_sparse_customer_columns_are_valid(self):
+        # Big Echo's converter declares all customer types but intentionally
+        # emits only applicable ones; empty rows prevent holiday mispricing.
+        table = tariff(customers=["学生会員", "学生", "会員", "シニア", "一般"],
+                       rows={"会員": 350, "一般": 450})
+        table[0]["plans"][0]["days"].insert(0, {"day": "祝", "prices": {}})
+        old_table = tariff(customers=["学生会員", "学生", "会員", "シニア", "一般"],
+                           rows={"会員": 300, "一般": 400})
+        old_table[0]["plans"][0]["days"].insert(0, {"day": "祝", "prices": {}})
+        issues = []
+        v._generated({"regular": table, "solo": []},
+                     {"regular": old_table, "solo": []}, "be-0141", issues)
+        self.assertEqual(issues, [])
+
+    def test_converted_price_unknown_customer_still_rejected(self):
+        table = tariff(customers=["会員", "一般"], rows={"他店舗の区分": 300})
+        issues = []
+        v._generated({"regular": table, "solo": []}, None, "be-0141", issues)
+        self.assertTrue(any("定義されていない料金区分" in issue for issue in issues))
+
+    def test_converted_plan_with_only_empty_days_is_rejected(self):
+        table = tariff(customers=["会員", "一般"], rows={})
+        issues = []
+        v._generated({"regular": table, "solo": []}, None, "be-0141", issues)
+        self.assertTrue(any("有効な料金がありません" in issue for issue in issues))
+
+    def test_source_price_columns_remain_strict(self):
+        issues = []
+        v._price_values(tariff(customers=["会員", "一般"], rows={"会員": 300}), "raw", issues)
+        self.assertTrue(any("列数" in issue for issue in issues))
+
     def test_generated_amounts_and_missing_cells(self):
         issues = []
         good = {"regular": tariff(250), "solo": []}

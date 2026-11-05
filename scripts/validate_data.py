@@ -194,7 +194,15 @@ def _identity(old, new, key, issues):
             issues.append(f"{key}: 店舗 URL のホストが変化")
 
 
-def _price_values(tables, key, issues, *, min_price=0):
+def _price_values(tables, key, issues, *, min_price=0, allow_sparse=False):
+    """Validate a source or converted price table.
+
+    Raw HTML tables must have all source header columns. Converted tariffs may
+    intentionally omit inapplicable customer types and insert empty day rows to
+    stop prices being used outside their valid days. Even in converted tables,
+    every populated key must belong to the declared headers, and a plan must
+    contain at least one usable price.
+    """
     if not isinstance(tables, list):
         issues.append(f"{key}: 料金表が配列ではありません")
         return {}
@@ -220,15 +228,22 @@ def _price_values(tables, key, issues, *, min_price=0):
             if not isinstance(days, list) or not days:
                 issues.append(f"{rowpath}: 曜日料金が空")
                 continue
+            usable_in_plan = False
             for di, day in enumerate(days):
                 dp = f"{rowpath}.days[{di}]"
                 if not isinstance(day, dict) or not _string(day.get("day"), 100) or not isinstance(day.get("prices"), dict):
                     issues.append(f"{dp}: 曜日または金額列が不正")
                     continue
                 values = day["prices"]
-                if customers is not None and set(values) != set(customers):
-                    issues.append(f"{dp}: 金額の列数または見出しが一致しません")
-                if not values:
+                if customers is not None:
+                    if allow_sparse:
+                        # The converted result is not a rectangular source
+                        # table; omitted customer types are intentional.
+                        if not set(values).issubset(customers):
+                            issues.append(f"{dp}: 定義されていない料金区分が混入")
+                    elif set(values) != set(customers):
+                        issues.append(f"{dp}: 金額の列数または見出しが一致しません")
+                if not values and not allow_sparse:
                     issues.append(f"{dp}: 金額が空")
                 bound = 2000 if "30分" in plan["name"] else 30000
                 for customer, price in values.items():
@@ -239,6 +254,10 @@ def _price_values(tables, key, issues, *, min_price=0):
                         issues.append(f"{dp}/{customer}: 不自然な料金 {price!r} (上限 {bound}円)")
                     else:
                         found[(ti, pi, di, customer)] = price
+                        if price is not None:
+                            usable_in_plan = True
+            if allow_sparse and not usable_in_plan:
+                issues.append(f"{rowpath}: 有効な料金がありません")
     return found
 
 
@@ -363,7 +382,7 @@ def _generated(item, old, key, issues):
     values = {}
     for kind in ("regular", "solo"):
         if kind in item:
-            for position, value in _price_values(item[kind], f"{key}.{kind}", issues).items():
+            for position, value in _price_values(item[kind], f"{key}.{kind}", issues, allow_sparse=True).items():
                 values[(kind,) + position] = value
     if not any(v is not None for v in values.values()):
         issues.append(f"{key}: 配布する料金が空")
@@ -371,7 +390,7 @@ def _generated(item, old, key, issues):
         before = {}
         for kind in ("regular", "solo"):
             if kind in old:
-                for position, value in _price_values(old[kind], f"{key}.old.{kind}", []).items():
+                for position, value in _price_values(old[kind], f"{key}.old.{kind}", [], allow_sparse=True).items():
                     before[(kind,) + position] = value
         if before and len(values) < len(before) * 0.65:
             issues.append(f"{key}: 配布料金セルが大量に欠落")
