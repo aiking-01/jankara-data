@@ -12,24 +12,29 @@ function dayLabel(value) {
   return days ? DAY_ORDER.filter((day) => days.has(day)).join('') : null;
 }
 
-function planOf(label, period) {
+function planOf(label, period, openingHours = '') {
   const text = norm(label);
   if (/JOY学|学生限定|\d+名様/.test(text)) return [];
-  const ranges = [...text.matchAll(/(\d{1,2}:\d{2})[〜～~-](?:翌)?(\d{1,2}:\d{2})/g)];
+  // LASTは公式の営業時間を明示的に確認できた場合だけ料金時刻へ変換。
+  // 24時間営業や曜日ごとに閉店が変わる場合は推測せずsource_ratesへ残す。
+  const exact = /^(?:\d{1,2}:\d{2})[〜～~-](?:翌)?(\d{1,2}:\d{2})$/.exec(norm(openingHours));
+  const close = exact?.[1] ?? null;
+  const ranges = [...text.matchAll(/(\d{1,2}:\d{2})[〜～~-](?:翌)?(\d{1,2}:\d{2}|LAST)/gi)];
+  const endAt = (range) => range[2].toUpperCase() === 'LAST' ? close : range[2];
   const lastEntry = /(?:最終受付|受付終了|受付時間)[:：]?([0-2]?\d:\d{2})/.exec(text)?.[1] ?? '';
   if (text.includes('30分')) {
-    if (ranges.length !== 1) return [];
-    return [{ band: '30分', name: '30分', hours: `${ranges[0][1]}～${ranges[0][2]}`, last_entry: '' }];
+    if (ranges.length !== 1 || !endAt(ranges[0])) return [];
+    return [{ band: '30分', name: '30分', hours: `${ranges[0][1]}～${endAt(ranges[0])}`, last_entry: '' }];
   }
   if (!ranges.length || (!text.includes('フリータイム') && !text.includes('フリー'))) return [];
-  return ranges.map((range) => {
+  return ranges.filter((range) => endAt(range) !== null).map((range) => {
     const startHour = Number(range[1].split(':')[0]);
     const name = text.includes('深夜') || startHour >= 21 ? '深夜フリータイム'
       : text.includes('ロング') ? 'ロングフリータイム'
         : text.includes('夕方') || (startHour >= 14 && startHour < 18) ? '夕方フリータイム'
           : text.includes('昼') || period === '昼' ? '昼フリータイム' : '夜フリータイム';
     return {
-      band: 'フリータイム', name, hours: `${range[1]}～${range[2]}`, last_entry: lastEntry,
+      band: 'フリータイム', name, hours: `${range[1]}～${endAt(range)}`, last_entry: lastEntry,
     };
   });
 }
@@ -61,7 +66,7 @@ function drinkOf(source, rawPrices) {
   return result;
 }
 
-export function convertJoysound(sections) {
+export function convertJoysound(sections, openingHours = '') {
   const groups = new Map();
   const conflicts = new Set();
   for (const section of sections ?? []) {
@@ -72,7 +77,7 @@ export function convertJoysound(sections) {
       if (!Object.keys(prices).length) continue;
       const conditions = drinkOf(row.drinks, row.prices);
       if (!conditions) continue;
-      for (const plan of planOf(row.label, section.period)) {
+      for (const plan of planOf(row.label, section.period, openingHours)) {
         const key = `${plan.band}|${plan.name}|${plan.hours}|${plan.last_entry}|${JSON.stringify(conditions)}`;
         if (conflicts.has(key)) continue;
         if (!groups.has(key)) groups.set(key, { ...plan, ...conditions, days: [] });
