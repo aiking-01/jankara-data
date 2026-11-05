@@ -63,6 +63,17 @@ class ManifestMonitorTests(unittest.TestCase):
         issues = monitor.inspect(self.path, NOW)
         self.assertTrue(any("maneki" in x and "不一致" in x for x in issues), issues)
 
+    def test_json_digest_is_checked_when_provided(self):
+        path = self.path / "manifest.json"
+        document = json.loads(path.read_text())
+        data = lzma.decompress((self.path / "chains.json.xz").read_bytes())
+        document["files"]["chains"]["json_sha256"] = hashlib.sha256(data).hexdigest()
+        path.write_text(json.dumps(document))
+        self.assertEqual(monitor.inspect(self.path, NOW), [])
+        document["files"]["chains"]["json_sha256"] = "0" * 64
+        path.write_text(json.dumps(document))
+        self.assertTrue(any("JSONハッシュ" in issue for issue in monitor.inspect(self.path, NOW)))
+
     def test_missing_file_is_rejected(self):
         (self.path / "bigecho.json.xz").unlink()
         self.assertTrue(any("bigecho" in x and "読めません" in x
