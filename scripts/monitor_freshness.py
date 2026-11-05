@@ -15,7 +15,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 REQUIRED = ("chains", "jankara", "bigecho", "maneki", "kan")
-REFRESHED = frozenset({"chains", "jankara", "bigecho", "maneki"})
+# 追加配信は任意。存在する場合には基本5種と同じ完全性検証を行う。
+OPTIONAL = ("joyjoy", "joysound", "cotedazur", "banban", "round1")
+KNOWN = frozenset(REQUIRED + OPTIONAL)
+# BanBan/ROUND1は目視承認後に更新されるため鮮度ではなく完全性だけ監視。
+REFRESHED = frozenset({"chains", "jankara", "bigecho", "maneki",
+                      "joyjoy", "joysound", "cotedazur"})
 
 
 def _utc(epoch: int) -> str:
@@ -33,7 +38,11 @@ def inspect(dist: Path, now: int, max_age_hours: float = 72) -> list[str]:
     files = manifest.get("files")
     if not isinstance(files, dict):
         return ["manifest.jsonのfilesが不正"]
-    for name in REQUIRED:
+    # 任意ファイルの破損・欠損も検出。未知名はパスとして扱わない。
+    for name in files:
+        if name not in KNOWN:
+            issues.append(f"{name}: 未対応のmanifestファイル名")
+    for name in REQUIRED + tuple(name for name in OPTIONAL if name in files):
         entry = files.get(name)
         if not isinstance(entry, dict):
             issues.append(f"{name}: manifestの項目がありません")
