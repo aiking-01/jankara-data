@@ -1,5 +1,5 @@
 // 料金表を金額へ変換する。アプリに配るのは変換できた店の金額だけ
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { convertBigEcho } from './web/bigecho.js';
@@ -31,6 +31,36 @@ for (const [name, [file, convert]] of Object.entries(TARGETS)) {
     shops[id] = { checked_at: shop.checked_at };
     for (const field of FIELDS) if (!isEmpty(converted[field])) shops[id][field] = converted[field];
   }
+
+  // B-30型は通常のOCRと別形式。確認済みの画像ハッシュに基づく
+  // source/kan_b30.json がある店舗だけ、30分料金を上書きする。
+  // フリータイムの終了時刻は元画像にないため配布対象には入れない。
+  let updatedAt = source.updated_at;
+  if (name === 'kan') {
+    const approvedPath = join(ROOT, 'source', 'kan_b30.json');
+    if (existsSync(approvedPath)) {
+      const approved = JSON.parse(readFileSync(approvedPath, 'utf8'));
+      if (approved.schema_version !== 1 || !approved.shops || Array.isArray(approved.shops)) {
+        throw new Error('source/kan_b30.json: invalid schema');
+      }
+      const registry = JSON.parse(readFileSync(join(ROOT, 'chains.json'), 'utf8'));
+      const registered = new Map((Array.isArray(registry.shops) ? registry.shops : Object.values(registry.shops))
+        .map((shop) => [shop.id, shop]));
+      for (const [id, shop] of Object.entries(approved.shops)) {
+        if (!/^kan-[A-Za-z0-9_-]+$/.test(id) || registered.get(id)?.chain !== 'カラオケ館') {
+          throw new Error(`source/kan_b30.json: unknown karaoke-kan shop ${id}`);
+        }
+        if (!Number.isInteger(shop.checked_at) || !Array.isArray(shop.regular) ||
+            shop.regular.length !== 1 || shop.regular[0]?.band !== '30分' ||
+            !Array.isArray(shop.regular[0]?.plans) || !shop.regular[0].plans.length ||
+            shop.regular[0].plans.some((plan) => plan.name !== '30分')) {
+          throw new Error(`source/kan_b30.json: invalid prices for ${id}`);
+        }
+        shops[id] = { checked_at: shop.checked_at, regular: shop.regular };
+      }
+      updatedAt = Math.max(updatedAt, approved.updated_at ?? 0);
+    }
+  }
   console.log(`${name}: ${Object.keys(shops).length} / ${total}`);
-  writeFileSync(join(ROOT, 'build', `${name}.json`), JSON.stringify({ updated_at: source.updated_at, shops }));
+  writeFileSync(join(ROOT, 'build', `${name}.json`), JSON.stringify({ updated_at: updatedAt, shops }));
 }
