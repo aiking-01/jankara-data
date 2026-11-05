@@ -133,8 +133,8 @@ class LegacyShopRefreshTests(unittest.TestCase):
             def raise_for_status(self):
                 pass
 
-        with mock.patch.object(update, "request", return_value=Response()) as fetch, \\
-             mock.patch.object(update, "worker_session", return_value=object()), \\
+        with mock.patch.object(update, "request", return_value=Response()) as fetch, \
+             mock.patch.object(update, "worker_session", return_value=object()), \
              mock.patch.object(update, "RequestPacer"):
             result = update.details([url], lambda *_: fixed, [old], object(), 0)
         self.assertEqual(result, [fixed])
@@ -147,7 +147,7 @@ class LegacyShopRefreshTests(unittest.TestCase):
             "prefecture": "栃木県",
             "address": "栃木県那須塩原市鍋掛1086-202",
         }
-        with mock.patch.object(update, "request") as fetch, \\
+        with mock.patch.object(update, "request") as fetch, \
              mock.patch.object(update, "RequestPacer"):
             result = update.details([url], lambda *_: None, [old], object(), 0)
         self.assertEqual(result, [old])
