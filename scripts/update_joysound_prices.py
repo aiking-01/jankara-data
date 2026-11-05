@@ -102,7 +102,7 @@ def official_simple_hours(soup: BeautifulSoup) -> str:
         if index + 2 < len(lines) and lines[index + 2].startswith(("※", "＊", "*")):
             continue
         candidates.append(candidate)
-    return candidates[0] if len(set(candidates)) == 1 else ""
+    return candidates[0].replace("~", "～") if len(set(candidates)) == 1 else ""
 
 
 def parse_page(html: str, page: str) -> dict:
