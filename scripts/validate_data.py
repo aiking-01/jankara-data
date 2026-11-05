@@ -28,11 +28,13 @@ RAW = {
     "joysound_prices": "source/joysound_prices.json",
     "maneki_prices": "source/maneki_prices.json",
     "megabig_prices": "source/megabig_prices.json",
+    "joyjoy_prices": "source/joyjoy_prices.json",
     "ocr": "source/ocr.json",
 }
 BUILT = {"chains": RAW["chains"], "jankara": RAW["prices"],
          "bigecho": "build/bigecho.json", "maneki": "build/maneki.json",
          "megabig": "build/megabig.json",
+         "joyjoy": "build/joyjoy.json",
          "kan": "build/kan.json", "joysound": "build/joysound.json"}
 PREFIX = {
     "ビッグエコー": ("be-", "shop.big-echo.jp"),
@@ -51,6 +53,7 @@ CLOCK = {"updated_at", "checked_at", "changed_at"}
 JAPANESE_REGION = re.compile(r"^(?:北海道|東京都|大阪府|京都府|.{2,3}県)")
 NO_HTML = re.compile(r"<(?:html|body|title|script|div|h[1-6]|!doctype)\b|(?:502 Bad Gateway|Access Denied|404 Not Found)", re.I)
 PRICE_TEXT = re.compile(r"^(?:[¥￥]?\s*)?(\d{1,3}(?:,\d{3})*|\d+)(?:\s*円)?$")
+MINIMUM_PRICE_TEXT = re.compile(r"^[¥￥]\s*(\d[\d,]*)~$")
 MAX_ISSUES = 40
 
 
@@ -484,9 +487,89 @@ def _generated(item, old, key, issues):
         _price_delta(before, values, key, issues)
 
 
+def _joyjoy_values(item):
+    values = {}
+    rates = item.get("rates", []) if isinstance(item, dict) else []
+    if not isinstance(rates, list):
+        return values
+    for rate in rates:
+        if not isinstance(rate, dict) or not isinstance(rate.get("windows"), list):
+            continue
+        for window in rate["windows"]:
+            if isinstance(window, dict):
+                values[(rate.get("period"), window.get("days", ""), window.get("hours", ""))] = window.get("minimum_yen")
+    return values
+
+
+def _joyjoy(item, old, key, issues, *, require_checked_at=False):
+    if not isinstance(item, dict):
+        issues.append(f"{key}: JOYJOY料金レコードが不正")
+        return
+    page = item.get("page")
+    parsed = urlsplit(page) if isinstance(page, str) else None
+    if (not _string(page, 900) or not parsed or parsed.scheme != "https"
+            or parsed.hostname != "www.joyjoy.co.jp" or not parsed.path.startswith("/store/view/")):
+        issues.append(f"{key}: JOYJOY公式店舗ページ URL が不正")
+    checked = item.get("checked_at")
+    if require_checked_at and (type(checked) is not int or checked <= 0):
+        issues.append(f"{key}: checked_at が不正")
+    rates = item.get("rates")
+    if not isinstance(rates, list) or len(rates) != 3:
+        issues.append(f"{key}: JOYJOY料金区分が不正")
+        return
+    seen = set()
+    values = {}
+    for ri, rate in enumerate(rates):
+        path = f"{key}.rates[{ri}]"
+        if not isinstance(rate, dict):
+            issues.append(f"{path}: 料金区分が不正")
+            continue
+        period = rate.get("period")
+        if period not in ("daytime", "nighttime", "freetime") or period in seen:
+            issues.append(f"{path}: 時間帯が不正または重複")
+            continue
+        seen.add(period)
+        expected_unit = "per_person_per_freetime" if period == "freetime" else "per_person_30_minutes"
+        if rate.get("unit") != expected_unit or not _string(rate.get("charge"), 60):
+            issues.append(f"{path}: 利用単位が不正")
+        windows = rate.get("windows")
+        if not isinstance(windows, list) or not 1 <= len(windows) <= 4:
+            issues.append(f"{path}: 時間・曜日の行が不正")
+            continue
+        for wi, window in enumerate(windows):
+            wp = f"{path}.windows[{wi}]"
+            if not isinstance(window, dict) or not _string(window.get("hours"), 100):
+                issues.append(f"{wp}: 時間帯が不正")
+                continue
+            if period == "freetime" and window.get("days") and not _string(window.get("days"), 100):
+                issues.append(f"{wp}: 曜日区分が不正")
+            amount = window.get("minimum_yen")
+            bound = 30000 if period == "freetime" else 2000
+            if type(amount) is not int or not 1 <= amount <= bound:
+                issues.append(f"{wp}: 最低価格が不正 ({amount!r})")
+            display = window.get("price_text")
+            if not _string(display, 40):
+                issues.append(f"{wp}: 公式価格表記が不正")
+            else:
+                match = MINIMUM_PRICE_TEXT.fullmatch(unicodedata.normalize("NFKC", display).replace(" ", ""))
+                if not match or int(match[1].replace(",", "")) != amount:
+                    issues.append(f"{wp}: 公式表記と最低価格が一致しません")
+            values[(period, window.get("days", ""), window.get("hours", ""))] = amount
+        included = rate.get("included", [])
+        if not isinstance(included, list) or any(not _string(text, 180) for text in included):
+            issues.append(f"{path}: 付帯サービスの説明が不正")
+    if seen != {"daytime", "nighttime", "freetime"}:
+        issues.append(f"{key}: DAY・NIGHT・FREE TIMEのいずれかが欠落")
+    note = item.get("note", "")
+    if note and not _string(note, 180):
+        issues.append(f"{key}: 公式料金の注記が不正")
+    if old:
+        _price_delta(_joyjoy_values(old), values, key, issues)
+
+
 def _validate_doc(name, current, previous, issues, *, allow_empty_previous=False):
     fresh = _records(current, name)
-    old = _records(previous, name, allow_empty=allow_empty_previous or name in ("megabig_prices", "megabig"))
+    old = _records(previous, name, allow_empty=allow_empty_previous or name in ("megabig_prices", "megabig", "joyjoy_prices", "joyjoy"))
     old_count, fresh_count = len(old), len(fresh)
     if old_count and fresh_count < old_count * (0.95 if name != "ocr" else 0.90):
         issues.append(f"{name}: 店舗数が異常に減少 ({old_count} → {fresh_count})")
@@ -530,6 +613,8 @@ def _validate_doc(name, current, previous, issues, *, allow_empty_previous=False
             _megabig_raw(item, was, key, issues)
         elif name == "ocr":
             _ocr(item, was, key, issues)
+        elif name in ("joyjoy_prices", "joyjoy"):
+            _joyjoy(item, was, key, issues, require_checked_at=(name == "joyjoy_prices"))
         else:
             _generated(item, was, key, issues)
     return fresh, len(changed)
@@ -544,7 +629,7 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
         try:
             previous_bytes = _old_bytes(reference, file)
         except DataRejected:
-            if name not in ("joysound_prices", "megabig_prices"):
+            if name not in ("joysound_prices", "megabig_prices", "joyjoy_prices"):
                 raise
             previous_bytes = b'{"schema_version":1,"updated_at":0,"shops":{}}'
             missing_baseline = True
@@ -566,6 +651,11 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
     for key, row in raw["ocr"].items():
         if key in known and known[key].get("chain") != row.get("chain"):
             issues.append(f"ocr/{key}: 店舗一覧とチェーンが矛盾")
+    for key, row in raw["joyjoy_prices"].items():
+        if not key.startswith("jj-") or key not in known or known[key].get("chain") != "JOYJOY":
+            issues.append(f"joyjoy_prices/{key}: 店舗一覧にないJOYJOY店舗")
+        elif known[key].get("url") != row.get("page"):
+            issues.append(f"joyjoy_prices/{key}: 料金表URLが店舗一覧と一致しません")
     if stage == "full":
         for name, file in BUILT.items():
             if name in ("chains", "jankara"):
@@ -576,7 +666,7 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
             try:
                 previous = _json_bytes(lzma.decompress(_old_bytes(reference, old_file)), f"{reference}:{old_file}")
             except DataRejected:
-                if name not in ("joysound", "megabig"):
+                if name not in ("joysound", "megabig", "joyjoy"):
                     raise
                 previous = _json_bytes(b'{"schema_version":1,"updated_at":0,"shops":{}}', old_file)
                 missing_baseline = True
@@ -585,7 +675,7 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
             fresh, changes = _validate_doc(name, current, previous, issues,
                                            allow_empty_previous=missing_baseline)
             chain = {"bigecho": "ビッグエコー", "maneki": "まねきねこ",
-                     "kan": "カラオケ館", "megabig": "メガビッグ", "joysound": "JOYSOUND"}[name]
+                     "kan": "カラオケ館", "megabig": "メガビッグ", "joyjoy": "JOYJOY", "joysound": "JOYSOUND"}[name]
             for key, item in fresh.items():
                 if key not in known or known[key].get("chain") != chain:
                     if key not in _records(previous, name, allow_empty=missing_baseline):

@@ -38,3 +38,12 @@ for (const [name, [file, convert]] of Object.entries(TARGETS)) {
   console.log(`${name}: ${Object.keys(shops).length} / ${total}`);
   writeFileSync(join(ROOT, 'build', `${name}.json`), JSON.stringify({ updated_at: source.updated_at, shops }));
 }
+
+// JOYJOYは公式ページに掲載された「～」付きの最低価格を保つ。通常料金へ
+// 変換すると実額と誤認されるため、単位・時間帯・最低価格をそのまま配る。
+const joyjoy = JSON.parse(readFileSync(join(ROOT, 'source', 'joyjoy_prices.json'), 'utf8'));
+writeFileSync(join(ROOT, 'build', 'joyjoy.json'), JSON.stringify({
+  updated_at: joyjoy.updated_at,
+  shops: joyjoy.shops,
+}));
+console.log(`joyjoy: ${Object.keys(joyjoy.shops).length} 店 (公式最低料金)`);
