@@ -68,7 +68,7 @@ jobs:
           python scripts/extract_banban.py --help
 
   extract-and-publish:
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
+    if: (github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
