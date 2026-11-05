@@ -157,6 +157,19 @@ class ManifestConfirmationTests(unittest.TestCase):
             self.assertFalse(ok)
             self.assertIs(entry, old)
 
+    def test_existing_published_chain_cannot_disappear_from_registry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            dist = Path(directory)
+            original = {"schema_version": 2, "files": {
+                "chains": {"sha256": "f" * 64, "size": 12, "count": 1, "checked_at": NOW},
+                "joyjoy": {"sha256": "a" * 64, "size": 13, "count": 1, "checked_at": NOW},
+            }}
+            (dist / "manifest.json").write_text(json.dumps(original))
+            with mock.patch.object(publish, "DIST", dist), \
+                 mock.patch.object(publish, "SOURCES", {"chains": dist / "chains.json"}):
+                self.assertEqual(publish.main(), 1)
+            self.assertEqual(json.loads((dist / "manifest.json").read_text()), original)
+
     def test_unknown_confirmed_source_fails_closed(self):
         with mock.patch.dict(os.environ, {"REFRESH_CONFIRMED_DATA": "unknown"}):
             self.assertEqual(publish.main(), 1)
