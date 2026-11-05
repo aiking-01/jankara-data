@@ -484,8 +484,15 @@ def maneki_urls(session, delay):
 def details(urls, parser, previous, session, delay, *, allow_unlisted=False, pacer=None):
     """Skip known shop pages, fetch only new shops concurrently, preserve order."""
     urls = list(dict.fromkeys(urls))
-    # 予約ページを読む前に保存した店は、1 回だけ読み直す
-    known = {item["url"]: item for item in previous if "reserve" in item}
+    # 予約ページを読む前に保存した店は、1 回だけ読み直す。
+    # ただし古いパーサーで郵便マークが混入した店は、reserveの有無にかかわらず
+    # 現行パーサーで再取得しないと誤った都道府県が配信に残り続ける。
+    known = {
+        item["url"]: item for item in previous
+        if "reserve" in item
+        and not str(item.get("prefecture", "")).startswith("〒")
+        and not str(item.get("address", "")).startswith("〒")
+    }
     unknown = [url for url in urls if url not in known]
     found = {}
     failures = []
