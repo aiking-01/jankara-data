@@ -33,12 +33,12 @@ def bounded_json_sha256(compressed: bytes) -> str:
     decoder = lzma.LZMADecompressor()
     payload = decoder.decompress(compressed, max_length=MAX_JSON_BYTES + 1)
     if len(payload) > MAX_JSON_BYTES:
-        raise ValueError("解凍後のサイズが上限64MiBを超えました")
+        raise ValueError(f"解凍後のサイズが上限{MAX_JSON_BYTES}バイトを超えました")
     while not decoder.eof and not decoder.needs_input:
         chunk = decoder.decompress(b"", max_length=MAX_JSON_BYTES + 1 - len(payload))
         payload += chunk
         if len(payload) > MAX_JSON_BYTES:
-            raise ValueError("解凍後のサイズが上限64MiBを超えました")
+            raise ValueError(f"解凍後のサイズが上限{MAX_JSON_BYTES}バイトを超えました")
         if not chunk and not decoder.eof:
             raise ValueError("XZの展開が進みません")
     if not decoder.eof or decoder.unused_data:
