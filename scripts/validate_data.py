@@ -25,6 +25,7 @@ RAW = {
     "chains": "chains.json",
     "prices": "source/prices.json",
     "chain_prices": "source/chain_prices.json",
+    "joysound_prices": "source/joysound_prices.json",
     "maneki_prices": "source/maneki_prices.json",
     "megabig_prices": "source/megabig_prices.json",
     "ocr": "source/ocr.json",
@@ -33,7 +34,8 @@ RAW = {
 BUILT = {"chains": RAW["chains"], "jankara": RAW["prices"],
          "bigecho": "build/bigecho.json", "maneki": "build/maneki.json",
          "megabig": "build/megabig.json",
-         "kan": "build/kan.json", "joyjoy": "build/joyjoy.json"}
+         "kan": "build/kan.json", "joyjoy": "build/joyjoy.json",
+         "joysound": "build/joysound.json"}
 PREFIX = {
     "ビッグエコー": ("be-", "shop.big-echo.jp"),
     "カラオケ館": ("kan-", "karaokekan.jp"),
@@ -369,6 +371,51 @@ def _maneki_raw(item, old, key, issues):
         issues.append(f"{key}: PDF の配布元が不正")
 
 
+def _joysound_raw(item, key, issues):
+    sections = item.get("sections")
+    if not isinstance(sections, list) or not sections:
+        issues.append(f"{key}: JOYSOUND の料金表がありません")
+        return
+    valid_slot = False
+    for si, section in enumerate(sections):
+        if not isinstance(section, dict) or not _string(section.get("period"), 40) or not _string(section.get("day"), 100):
+            issues.append(f"{key}.sections[{si}]: 期間または曜日が不正")
+            continue
+        rows = section.get("rows")
+        if not isinstance(rows, list) or not rows:
+            issues.append(f"{key}.sections[{si}]: 行がありません")
+            continue
+        for ri, row in enumerate(rows):
+            path = f"{key}.sections[{si}].rows[{ri}]"
+            if not isinstance(row, dict) or not _string(row.get("label"), 180):
+                issues.append(f"{path}: プラン名が不正")
+                continue
+            prices = row.get("prices")
+            if not isinstance(prices, dict) or not prices or not set(prices).issubset({"学生", "シニア", "会員", "一般"}):
+                issues.append(f"{path}: 料金区分が不正")
+                continue
+            usable = False
+            for customer, price in prices.items():
+                if price is not None and (type(price) is not int or not 1 <= price <= 30000):
+                    issues.append(f"{path}/{customer}: 不自然な料金 {price!r}")
+                elif price is not None:
+                    usable = True
+            if not usable:
+                issues.append(f"{path}: 有効な金額がありません")
+            valid_slot = valid_slot or ("30分" in row["label"] and usable)
+            drinks = row.get("drinks", {})
+            if not isinstance(drinks, dict) or not set(drinks).issubset({"学生", "シニア", "会員", "一般"}) or any(
+                not isinstance(value, str) for value in drinks.values()
+            ):
+                issues.append(f"{path}: 飲み物条件が不正")
+    page = item.get("page")
+    parsed = urlsplit(page or "")
+    if parsed.scheme != "https" or parsed.hostname != "shop.joysound.com" or not parsed.path.startswith("/shop/"):
+        issues.append(f"{key}: JOYSOUND 料金ページ URL が不正")
+    if not valid_slot:
+        issues.append(f"{key}: 通常の30分料金がありません")
+
+
 def _megabig_raw(item, old, key, issues):
     sections = item.get("sections")
     if not isinstance(sections, list) or not sections:
@@ -566,6 +613,10 @@ def _validate_doc(name, current, previous, issues, *, allow_empty_old=False):
             if not key.startswith("mn-"):
                 issues.append(f"{key}: まねきねこ以外の料金情報")
             _maneki_raw(item, was, key, issues)
+        elif name == "joysound_prices":
+            if not key.startswith("js-"):
+                issues.append(f"{key}: JOYSOUND 以外の料金情報")
+            _joysound_raw(item, key, issues)
         elif name == "megabig_prices":
             if not key.startswith("mb-"): issues.append(f"{key}: メガビッグ以外の料金情報")
             _megabig_raw(item, was, key, issues)
@@ -583,15 +634,18 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
     raw = {}
     for name, file in RAW.items():
         current = _json_bytes((ROOT / file).read_bytes(), file)
-        missing_base = name in ("joyjoy_prices", "megabig_prices") and _missing_at_reference(reference, file)
+        missing_base = name in ("joyjoy_prices", "joysound_prices", "megabig_prices") and _missing_at_reference(reference, file)
         previous = ({"schema_version": 1, "updated_at": 0, "shops": {}} if missing_base
                     else _json_bytes(_old_bytes(reference, file), f"{reference}:{file}"))
         raw[name], changes = _validate_doc(name, current, previous, issues, allow_empty_old=missing_base)
         summary.append(f"{name}: {len(raw[name])} 件 (変更 {changes} 件)")
     known = raw["chains"]
-    for kind, group in (("chain_prices", "ビッグエコー"), ("maneki_prices", "まねきねこ"), ("megabig_prices", "メガビッグ")):
+    for kind, group in (("chain_prices", "ビッグエコー"), ("maneki_prices", "まねきねこ"),
+                         ("megabig_prices", "メガビッグ"), ("joysound_prices", "JOYSOUND")):
         for key in raw[kind]:
-            if key in known and known[key].get("chain") != group:
+            if kind == "joysound_prices" and (key not in known or known[key].get("chain") != group):
+                issues.append(f"{kind}/{key}: 店舗一覧にない JOYSOUND 料金レコード")
+            elif key in known and known[key].get("chain") != group:
                 issues.append(f"{kind}/{key}: 店舗一覧とチェーンが矛盾")
             elif key not in known and key not in _records(_json_bytes(_old_bytes(reference, RAW[kind]), RAW[kind]), kind):
                 issues.append(f"{kind}/{key}: 店舗一覧にない新規料金レコード")
@@ -609,7 +663,7 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
                 continue  # raw と同一: 既に検査済み
             current = _json_bytes((ROOT / file).read_bytes(), file)
             old_file = f"dist/{name}.json.xz"
-            missing_base = name in ("joyjoy", "megabig") and _missing_at_reference(reference, old_file)
+            missing_base = name in ("joyjoy", "joysound", "megabig") and _missing_at_reference(reference, old_file)
             if missing_base:
                 previous = {"schema_version": 1, "updated_at": 0, "shops": {}}
             else:
@@ -620,11 +674,15 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
                     raise DataRejected(f"{name}: 前回の公開 XZ が読み取れません") from exc
             fresh, changes = _validate_doc(name, current, previous, issues, allow_empty_old=missing_base)
             chain = {"bigecho": "ビッグエコー", "maneki": "まねきねこ", "kan": "カラオケ館", "megabig": "メガビッグ",
-                     "joyjoy": "JOYJOY"}[name]
-            for key in fresh:
+                     "joyjoy": "JOYJOY", "joysound": "JOYSOUND"}[name]
+            for key, item in fresh.items():
                 if key not in known or known[key].get("chain") != chain:
                     if key not in _records(previous, name, allow_empty=missing_base):
                         issues.append(f"build/{name}/{key}: 店舗一覧に存在しない店舗の料金")
+                if name == "joysound":
+                    expected = raw["joysound_prices"].get(key, {}).get("sections")
+                    if item.get("source_rates") != expected:
+                        issues.append(f"build/{name}/{key}: 配布元の全料金行が一致しません")
             summary.append(f"build/{name}: {len(fresh)} 件 (変更 {changes} 件)")
         # Removing a source or unexpectedly losing a major part of the published
         # dataset must be stopped, even if the raw shop count stayed constant.

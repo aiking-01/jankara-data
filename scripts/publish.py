@@ -17,6 +17,7 @@ DIST = ROOT / "dist"
 MANIFEST_VERSION = 2
 SHOPS_VERSION = 1
 SOURCES = {
+    "joysound": ROOT / "build" / "joysound.json",
     "chains": ROOT / "chains.json",
     "jankara": ROOT / "source" / "prices.json",
     "bigecho": ROOT / "build" / "bigecho.json",
