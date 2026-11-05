@@ -1,8 +1,12 @@
 """公式の営業時間が曖昧な場合、LASTに推定閉店時刻を割り当てない。"""
 import unittest
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 
 from bs4 import BeautifulSoup
-from scripts.update_joysound_prices import official_simple_hours
+from update_joysound_prices import official_simple_hours
 
 
 class OfficialHoursTests(unittest.TestCase):
