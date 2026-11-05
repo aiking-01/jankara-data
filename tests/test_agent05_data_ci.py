@@ -14,6 +14,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import monitor_freshness as monitor
 import publish
+import update
 
 
 NOW = 1_800_000_000
@@ -112,6 +113,45 @@ class ManifestConfirmationTests(unittest.TestCase):
     def test_unknown_confirmed_source_fails_closed(self):
         with mock.patch.dict(os.environ, {"REFRESH_CONFIRMED_DATA": "unknown"}):
             self.assertEqual(publish.main(), 1)
+
+
+class LegacyShopRefreshTests(unittest.TestCase):
+    def test_existing_shop_with_postal_mark_is_refetched(self):
+        url = "https://karaokeclub.jp/shop/kuroiso/"
+        old = {
+            "url": url, "id": "dam-黒磯店", "reserve": "",
+            "prefecture": "〒栃木県",
+            "address": "〒栃木県那須塩原市鍋掛1086-202",
+        }
+        fixed = {**old, "prefecture": "栃木県",
+                 "address": "栃木県那須塩原市鍋掛1086-202"}
+
+        class Response:
+            status_code = 200
+            text = "verified-shop-html"
+
+            def raise_for_status(self):
+                pass
+
+        with mock.patch.object(update, "request", return_value=Response()) as fetch, \\
+             mock.patch.object(update, "worker_session", return_value=object()), \\
+             mock.patch.object(update, "RequestPacer"):
+            result = update.details([url], lambda *_: fixed, [old], object(), 0)
+        self.assertEqual(result, [fixed])
+        fetch.assert_called_once()
+
+    def test_clean_existing_shop_is_still_skipped(self):
+        url = "https://karaokeclub.jp/shop/kuroiso/"
+        old = {
+            "url": url, "id": "dam-黒磯店", "reserve": "",
+            "prefecture": "栃木県",
+            "address": "栃木県那須塩原市鍋掛1086-202",
+        }
+        with mock.patch.object(update, "request") as fetch, \\
+             mock.patch.object(update, "RequestPacer"):
+            result = update.details([url], lambda *_: None, [old], object(), 0)
+        self.assertEqual(result, [old])
+        fetch.assert_not_called()
 
 
 if __name__ == "__main__":
