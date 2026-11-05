@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 FILES = ("chains.json", "source/prices.json", "source/chain_prices.json",
          "source/maneki_prices.json", "source/megabig_prices.json", "source/joyjoy_prices.json",
-         "source/joysound_prices.json", "source/cotedazur_prices.json")
+         "source/joysound_prices.json", "source/cotedazur_prices.json", "source/banban_prices.json")
 CLOCK_KEYS = {"updated_at", "checked_at", "etag", "last_modified"}
 
 

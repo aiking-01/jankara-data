@@ -26,6 +26,7 @@ SOURCES = {
     "maneki": ROOT / "build" / "maneki.json",
     "kan": ROOT / "build" / "kan.json",
     "megabig": ROOT / "build" / "megabig.json",
+    "banban": ROOT / "source" / "banban_prices.json",
     "cotedazur": ROOT / "build" / "cotedazur.json",
     "joyjoy": ROOT / "build" / "joyjoy.json",
 }

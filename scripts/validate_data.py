@@ -27,6 +27,7 @@ RAW = {
     "chain_prices": "source/chain_prices.json",
     "joysound_prices": "source/joysound_prices.json",
     "cotedazur_prices": "source/cotedazur_prices.json",
+    "banban_prices": "source/banban_prices.json",
     "maneki_prices": "source/maneki_prices.json",
     "megabig_prices": "source/megabig_prices.json",
     "ocr": "source/ocr.json",
@@ -36,7 +37,7 @@ BUILT = {"chains": RAW["chains"], "jankara": RAW["prices"],
          "bigecho": "build/bigecho.json", "maneki": "build/maneki.json",
          "megabig": "build/megabig.json",
          "kan": "build/kan.json", "joyjoy": "build/joyjoy.json",
-         "joysound": "build/joysound.json", "cotedazur": "build/cotedazur.json"}
+         "joysound": "build/joysound.json", "cotedazur": "build/cotedazur.json", "banban": RAW["banban_prices"]}
 PREFIX = {
     "ビッグエコー": ("be-", "shop.big-echo.jp"),
     "カラオケ館": ("kan-", "karaokekan.jp"),
@@ -707,6 +708,19 @@ def _validate_doc(name, current, previous, issues, *, allow_empty_old=False):
             _megabig_raw(item, was, key, issues)
         elif name == "ocr":
             _ocr(item, was, key, issues)
+        elif name in ("banban_prices", "banban"):
+            if not key.startswith("bb-"):
+                issues.append(f"{key}: BanBan以外の料金情報")
+            _generated(item, was, key, issues)
+            for special in item.get("specials", []):
+                if not isinstance(special, dict) or not _string(special.get("name"), 90) or not _string(special.get("eligible"), 90):
+                    issues.append(f"{key}: 条件付きプランの形式が不正")
+                    continue
+                if type(special.get("stay_minutes")) is not int or not 30 <= special["stay_minutes"] <= 720:
+                    issues.append(f"{key}: 条件付きプランの滞在時間が不正")
+                days = special.get("days")
+                if not isinstance(days, list) or len(days) != 4 or any(not isinstance(d, dict) or not _string(d.get("day")) or type(d.get("price")) is not int or not 100 <= d["price"] <= 30000 for d in days):
+                    issues.append(f"{key}: 条件付きプランの日別料金が不正")
         elif name in ("joyjoy_prices", "joyjoy"):
             _joyjoy(item, was, key, issues, require_checked_at=(name == "joyjoy_prices"))
         else:
@@ -719,7 +733,7 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
     raw = {}
     for name, file in RAW.items():
         current = _json_bytes((ROOT / file).read_bytes(), file)
-        missing_base = name in ("joyjoy_prices", "joysound_prices", "cotedazur_prices", "megabig_prices") and _missing_at_reference(reference, file)
+        missing_base = name in ("joyjoy_prices", "joysound_prices", "cotedazur_prices", "banban_prices", "megabig_prices") and _missing_at_reference(reference, file)
         previous = ({"schema_version": 1, "updated_at": 0, "shops": {}} if missing_base
                     else _json_bytes(_old_bytes(reference, file), f"{reference}:{file}"))
         raw[name], changes = _validate_doc(name, current, previous, issues, allow_empty_old=missing_base)
@@ -727,9 +741,9 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
     known = raw["chains"]
     for kind, group in (("chain_prices", "ビッグエコー"), ("maneki_prices", "まねきねこ"),
                          ("megabig_prices", "メガビッグ"), ("joysound_prices", "JOYSOUND"),
-                         ("cotedazur_prices", "コート・ダジュール")):
+                         ("cotedazur_prices", "コート・ダジュール"), ("banban_prices", "BanBan")):
         for key in raw[kind]:
-            if kind in ("joysound_prices", "cotedazur_prices") and (key not in known or known[key].get("chain") != group):
+            if kind in ("joysound_prices", "cotedazur_prices", "banban_prices") and (key not in known or known[key].get("chain") != group):
                 issues.append(f"{kind}/{key}: 店舗一覧にない JOYSOUND 料金レコード")
             elif key in known and known[key].get("chain") != group:
                 issues.append(f"{kind}/{key}: 店舗一覧とチェーンが矛盾")
@@ -749,7 +763,7 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
                 continue  # raw と同一: 既に検査済み
             current = _json_bytes((ROOT / file).read_bytes(), file)
             old_file = f"dist/{name}.json.xz"
-            missing_base = name in ("joyjoy", "joysound", "cotedazur", "megabig") and _missing_at_reference(reference, old_file)
+            missing_base = name in ("joyjoy", "joysound", "cotedazur", "banban", "megabig") and _missing_at_reference(reference, old_file)
             if missing_base:
                 previous = {"schema_version": 1, "updated_at": 0, "shops": {}}
             else:
@@ -760,7 +774,7 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
                     raise DataRejected(f"{name}: 前回の公開 XZ が読み取れません") from exc
             fresh, changes = _validate_doc(name, current, previous, issues, allow_empty_old=missing_base)
             chain = {"bigecho": "ビッグエコー", "maneki": "まねきねこ", "kan": "カラオケ館", "megabig": "メガビッグ",
-                     "joyjoy": "JOYJOY", "joysound": "JOYSOUND", "cotedazur": "コート・ダジュール"}[name]
+                     "joyjoy": "JOYJOY", "joysound": "JOYSOUND", "cotedazur": "コート・ダジュール", "banban": "BanBan"}[name]
             for key, item in fresh.items():
                 if key not in known or known[key].get("chain") != chain:
                     if key not in _records(previous, name, allow_empty=missing_base):
