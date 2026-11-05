@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { convertBigEcho } from './web/bigecho.js';
 import { convertManeki } from './web/maneki.js';
+import { convertMegabig } from './web/megabig.js';
 import { convertKanOcr } from './web/ocr.js';
 import { convertJoysound } from './web/joysound.js';
 
@@ -14,6 +15,7 @@ const TARGETS = {
   bigecho: ['chain_prices.json', (shop) => convertBigEcho(shop.sections, shop.hours)],
   joysound: ['joysound_prices.json', (shop) => convertJoysound(shop.sections, shop.opening_hours)],
   maneki: ['maneki_prices.json', (shop) => convertManeki(shop.tables)],
+  megabig: ['megabig_prices.json', (shop) => convertMegabig(shop.sections, shop.hours)],
   kan: ['ocr.json', (shop) => (shop.chain === 'カラオケ館' ? convertKanOcr(shop.reads) : { reason: 'other-chain' })],
 };
 

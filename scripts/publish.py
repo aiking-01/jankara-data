@@ -23,6 +23,7 @@ SOURCES = {
     "joysound": ROOT / "build" / "joysound.json",
     "maneki": ROOT / "build" / "maneki.json",
     "kan": ROOT / "build" / "kan.json",
+    "megabig": ROOT / "build" / "megabig.json",
 }
 # 前回よりこの割合を下回ったら、取得か変換の異常とみなして前回のファイルを残す
 MIN_RATIO = 0.9

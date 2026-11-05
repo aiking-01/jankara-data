@@ -8,11 +8,13 @@ GitHub Actions が毎日 04:10（日本時間）に各チェーンの公式サ�
 | ファイル | 内容 |
 |---|---|
 | `manifest.json` | 各ファイルの sha256、大きさ、店の数、確認日時 |
-| `chains.json.xz` | 10 チェーンの店舗（名前・住所・座標・公式の予約ページ） |
+| `chains.json.xz` | 11 チェーンの店舗（名前・住所・座標・公式の予約ページ） |
 | `jankara.json.xz` | ジャンカラの料金 |
 | `bigecho.json.xz` | ビッグエコーの金額（変換できた店だけ） |
 | `joysound.json.xz` | JOYSOUND 直営店の料金。比較用料金と、昼・夜の公式料金表全行（`source_rates`） |
 | `maneki.json.xz` | まねきねこの金額（変換できた店だけ） |
+| `megabig.json.xz` | メガビッグの金額（変換できた店だけ） |
+| `kan.json.xz` | カラオケ館の金額（変換できた店だけ） |
 
 通信量を抑えるため、アプリは毎日 `manifest.json` だけを読み、sha256 が変わったファイルだけをダウンロードします。
 確認日時は `manifest.json` にあり、確認できなかった店にだけ店ごとの `checked_at` が残ります。
@@ -23,6 +25,7 @@ GitHub Actions が毎日 04:10（日本時間）に各チェーンの公式サ�
 
 - `chains.json` と `source/` は公式サイトから読んだ元データです。確認日時だけの変更はコミットしません。
 - `scripts/convert.mjs` が料金表を金額へ変換し、読めない表は配りません。
+- `scripts/update_megabig.py` がメガビッグの公式店舗一覧と料金表を取得します。
 - `scripts/update_joysound_prices.py` が JOYSOUND 公式の各店舗ページから税込料金を取得します。比較用の30分料金・フリータイムに加え、条件付きプランやパックを含む昼・夜の料金表全行も `source_rates` に保存します。「JOY学」など条件付きの価格は比較料金には含めず、元の料金表データとして配信します。
 - `scripts/publish.py` が xz で圧縮して `dist/` に置きます。店の数が 1 割以上減ったファイルは前回のものを残します。
 - `scripts/web/bigecho.js` はアプリ本体と同じものです。変更するときは両方を直します。
