@@ -26,6 +26,7 @@ RAW = {
     "prices": "source/prices.json",
     "chain_prices": "source/chain_prices.json",
     "joysound_prices": "source/joysound_prices.json",
+    "cotedazur_prices": "source/cotedazur_prices.json",
     "maneki_prices": "source/maneki_prices.json",
     "megabig_prices": "source/megabig_prices.json",
     "ocr": "source/ocr.json",
@@ -35,7 +36,7 @@ BUILT = {"chains": RAW["chains"], "jankara": RAW["prices"],
          "bigecho": "build/bigecho.json", "maneki": "build/maneki.json",
          "megabig": "build/megabig.json",
          "kan": "build/kan.json", "joyjoy": "build/joyjoy.json",
-         "joysound": "build/joysound.json"}
+         "joysound": "build/joysound.json", "cotedazur": "build/cotedazur.json"}
 PREFIX = {
     "ビッグエコー": ("be-", "shop.big-echo.jp"),
     "カラオケ館": ("kan-", "karaokekan.jp"),
@@ -54,6 +55,8 @@ JAPANESE_REGION = re.compile(r"^(?:北海道|東京都|大阪府|京都府|.{2,3
 NO_HTML = re.compile(r"<(?:html|body|title|script|div|h[1-6]|!doctype)\b|(?:502 Bad Gateway|Access Denied|404 Not Found)", re.I)
 PRICE_TEXT = re.compile(r"^(?:[¥￥]?\s*)?(\d{1,3}(?:,\d{3})*|\d+)(?:\s*円)?$")
 MINIMUM_PRICE_TEXT = re.compile(r"^[¥￥]\s*(\d[\d,]*)~$")
+COTE_PRICE_FIELD = re.compile(r"(?:_30|_tax|_normal|_student|_ordinary)$|^ftfd_")
+COTE_PRICE_GROUPS = ("noon_weekday", "noon_weekend", "night_weekday", "night_weekend")
 MAX_ISSUES = 40
 
 
@@ -99,7 +102,7 @@ def _records(doc: dict, name: str, *, allow_empty: bool = False) -> dict:
             if key in found:
                 raise DataRejected(f"{name}: 店舗 ID 重複 {key}")
             found[key] = item
-    if not found and not allow_empty:
+    if not found and not allow_empty and name not in ("cotedazur_prices", "cotedazur", "megabig_prices", "megabig"):
         raise DataRejected(f"{name}: データが空です")
     return found
 
@@ -416,6 +419,83 @@ def _joysound_raw(item, key, issues):
         issues.append(f"{key}: 通常の30分料金がありません")
 
 
+def _cotedazur_prices(item, old, key, issues):
+    if not key.startswith("cd-") or type(item.get("shop_code")) is not int or str(item["shop_code"]) != key.removeprefix("cd-"):
+        issues.append(f"{key}: 店舗コードと料金IDが一致しません")
+    if not _string(item.get("shop_name"), 120):
+        issues.append(f"{key}: 料金JSONの店舗名が不正")
+    plans = item.get("price_plan")
+    if not isinstance(plans, list) or not plans or len(plans) > 30:
+        issues.append(f"{key}: price_plan が空、または形式が不正")
+        return
+
+    for index, plan in enumerate(plans):
+        if not isinstance(plan, dict) or not isinstance(plan.get("label_name"), str):
+            issues.append(f"{key}.price_plan[{index}]: 料金期間が不正")
+            continue
+        for group in COTE_PRICE_GROUPS:
+            rows = plan.get(group)
+            if rows is not None and (not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows)):
+                issues.append(f"{key}.price_plan[{index}].{group}: 料金行が不正")
+
+    values = {}
+    has_30_minute_price = False
+
+    def visit(value, path="price_plan"):
+        nonlocal has_30_minute_price
+        if isinstance(value, dict):
+            for field, child in value.items():
+                child_path = f"{path}.{field}"
+                if COTE_PRICE_FIELD.search(field):
+                    if child is None or (isinstance(child, str) and child.strip() in ("", "-", "ー", "－")):
+                        continue
+                    if isinstance(child, bool):
+                        issues.append(f"{key}.{child_path}: 金額が boolean です")
+                        continue
+                    normalized = unicodedata.normalize("NFKC", str(child)).replace(",", "").strip()
+                    if not re.fullmatch(r"\d+", normalized):
+                        issues.append(f"{key}.{child_path}: 金額の形式が不正 ({child!r})")
+                        continue
+                    amount = int(normalized)
+                    limit = 20000 if field.endswith("_30") else 100000
+                    if amount > limit:
+                        issues.append(f"{key}.{child_path}: 金額の上限を超えています ({amount})")
+                        continue
+                    values[child_path] = amount
+                    if field.endswith("_30"):
+                        has_30_minute_price = True
+                elif isinstance(child, (dict, list)):
+                    visit(child, child_path)
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                visit(child, f"{path}[{index}]")
+
+    visit(plans)
+    if not has_30_minute_price:
+        issues.append(f"{key}: 30分料金がありません")
+    if old:
+        before = {}
+        # Older records may include fetch metadata that is absent from dist.
+        def old_visit(value, path="price_plan"):
+            if isinstance(value, dict):
+                for field, child in value.items():
+                    child_path = f"{path}.{field}"
+                    if COTE_PRICE_FIELD.search(field):
+                        if child is None or (isinstance(child, str) and child.strip() in ("", "-", "ー", "－")):
+                            continue
+                        normalized = unicodedata.normalize("NFKC", str(child)).replace(",", "").strip()
+                        if re.fullmatch(r"\d+", normalized):
+                            before[child_path] = int(normalized)
+                    elif isinstance(child, (dict, list)):
+                        old_visit(child, child_path)
+            elif isinstance(value, list):
+                for index, child in enumerate(value):
+                    old_visit(child, f"{path}[{index}]")
+        old_visit(old.get("price_plan", []))
+        if before and len(values) < len(before) * 0.65:
+            issues.append(f"{key}: 料金セルが大量に欠落")
+        _price_delta(before, values, key, issues)
+
 def _megabig_raw(item, old, key, issues):
     sections = item.get("sections")
     if not isinstance(sections, list) or not sections:
@@ -578,7 +658,7 @@ def _joyjoy(item, old, key, issues, *, require_checked_at=False):
 
 def _validate_doc(name, current, previous, issues, *, allow_empty_old=False):
     fresh = _records(current, name)
-    old = _records(previous, name, allow_empty=allow_empty_old or name in ("megabig_prices", "megabig"))
+    old = _records(previous, name, allow_empty=allow_empty_old or name in ("megabig_prices", "megabig", "cotedazur_prices", "cotedazur"))
     old_count, fresh_count = len(old), len(fresh)
     if not allow_empty_old and fresh_count < old_count * (0.95 if name != "ocr" else 0.90):
         issues.append(f"{name}: 店舗数が異常に減少 ({old_count} → {fresh_count})")
@@ -613,6 +693,11 @@ def _validate_doc(name, current, previous, issues, *, allow_empty_old=False):
             if not key.startswith("mn-"):
                 issues.append(f"{key}: まねきねこ以外の料金情報")
             _maneki_raw(item, was, key, issues)
+        elif name == "cotedazur_prices":
+            _cotedazur_prices(item, was, key, issues)
+        elif name == "cotedazur":
+            _cotedazur_prices(item, was, key, issues)
+            _generated(item, was, key, issues)
         elif name == "joysound_prices":
             if not key.startswith("js-"):
                 issues.append(f"{key}: JOYSOUND 以外の料金情報")
@@ -634,16 +719,17 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
     raw = {}
     for name, file in RAW.items():
         current = _json_bytes((ROOT / file).read_bytes(), file)
-        missing_base = name in ("joyjoy_prices", "joysound_prices", "megabig_prices") and _missing_at_reference(reference, file)
+        missing_base = name in ("joyjoy_prices", "joysound_prices", "cotedazur_prices", "megabig_prices") and _missing_at_reference(reference, file)
         previous = ({"schema_version": 1, "updated_at": 0, "shops": {}} if missing_base
                     else _json_bytes(_old_bytes(reference, file), f"{reference}:{file}"))
         raw[name], changes = _validate_doc(name, current, previous, issues, allow_empty_old=missing_base)
         summary.append(f"{name}: {len(raw[name])} 件 (変更 {changes} 件)")
     known = raw["chains"]
     for kind, group in (("chain_prices", "ビッグエコー"), ("maneki_prices", "まねきねこ"),
-                         ("megabig_prices", "メガビッグ"), ("joysound_prices", "JOYSOUND")):
+                         ("megabig_prices", "メガビッグ"), ("joysound_prices", "JOYSOUND"),
+                         ("cotedazur_prices", "コート・ダジュール")):
         for key in raw[kind]:
-            if kind == "joysound_prices" and (key not in known or known[key].get("chain") != group):
+            if kind in ("joysound_prices", "cotedazur_prices") and (key not in known or known[key].get("chain") != group):
                 issues.append(f"{kind}/{key}: 店舗一覧にない JOYSOUND 料金レコード")
             elif key in known and known[key].get("chain") != group:
                 issues.append(f"{kind}/{key}: 店舗一覧とチェーンが矛盾")
@@ -663,7 +749,7 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
                 continue  # raw と同一: 既に検査済み
             current = _json_bytes((ROOT / file).read_bytes(), file)
             old_file = f"dist/{name}.json.xz"
-            missing_base = name in ("joyjoy", "joysound", "megabig") and _missing_at_reference(reference, old_file)
+            missing_base = name in ("joyjoy", "joysound", "cotedazur", "megabig") and _missing_at_reference(reference, old_file)
             if missing_base:
                 previous = {"schema_version": 1, "updated_at": 0, "shops": {}}
             else:
@@ -674,7 +760,7 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
                     raise DataRejected(f"{name}: 前回の公開 XZ が読み取れません") from exc
             fresh, changes = _validate_doc(name, current, previous, issues, allow_empty_old=missing_base)
             chain = {"bigecho": "ビッグエコー", "maneki": "まねきねこ", "kan": "カラオケ館", "megabig": "メガビッグ",
-                     "joyjoy": "JOYJOY", "joysound": "JOYSOUND"}[name]
+                     "joyjoy": "JOYJOY", "joysound": "JOYSOUND", "cotedazur": "コート・ダジュール"}[name]
             for key, item in fresh.items():
                 if key not in known or known[key].get("chain") != chain:
                     if key not in _records(previous, name, allow_empty=missing_base):

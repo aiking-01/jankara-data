@@ -6,6 +6,7 @@ import { convertBigEcho } from './web/bigecho.js';
 import { convertManeki } from './web/maneki.js';
 import { convertMegabig } from './web/megabig.js';
 import { convertKanOcr } from './web/ocr.js';
+import { convertCotedazurShops } from './web/cotedazur.js';
 import { convertJoysound } from './web/joysound.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -24,6 +25,16 @@ function isEmpty(value) {
 }
 
 mkdirSync(join(ROOT, 'build'), { recursive: true });
+// コート・ダジュールは公式料金JSONを保持し、engine.js 用の通常料金とヒトカラ料金も作る。
+const coteSource = JSON.parse(readFileSync(join(ROOT, 'source', 'cotedazur_prices.json'), 'utf8'));
+const { shops: coteShops, rejected: coteFailures, accepted, original } =
+  convertCotedazurShops(coteSource.shops);
+for (const { id, reason } of coteFailures) {
+  console.warn(`::warning::cotedazur/${id}: price schema is unsupported: ${reason}`);
+}
+writeFileSync(join(ROOT, 'build', 'cotedazur.json'), JSON.stringify({ updated_at: coteSource.updated_at, shops: coteShops }));
+console.log(`cotedazur: ${accepted}/${original} shops (${coteFailures.length} unsupported)`);
+
 for (const [name, [file, convert]] of Object.entries(TARGETS)) {
   const source = JSON.parse(readFileSync(join(ROOT, 'source', file), 'utf8'));
   const shops = {};
