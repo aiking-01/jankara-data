@@ -23,6 +23,7 @@ SOURCES = {
     "maneki": ROOT / "build" / "maneki.json",
     "kan": ROOT / "build" / "kan.json",
     "megabig": ROOT / "build" / "megabig.json",
+    "joyjoy": ROOT / "build" / "joyjoy.json",
     "cotedazur": ROOT / "build" / "cotedazur.json",
 }
 # 前回よりこの割合を下回ったら、取得か変換の異常とみなして前回のファイルを残す

@@ -50,6 +50,11 @@ jobs:
         continue-on-error: true
         run: python scripts/update_megabig.py
 
+      - name: Update JoyJoy minimum prices
+        id: joyjoy
+        continue-on-error: true
+        run: python scripts/update_joyjoy_prices.py
+
       - name: Update Jankara prices
         id: jankara
         continue-on-error: true
@@ -82,7 +87,7 @@ jobs:
           bash scripts/push_data.sh "data: refresh" chains.json source
 
       - name: Fail run when a step failed
-        if: steps.chains.outcome == 'failure' || steps.megabig.outcome == 'failure' || steps.jankara.outcome == 'failure' || steps.bigecho.outcome == 'failure' || steps.maneki.outcome == 'failure' || steps.cotedazur.outcome == 'failure' || steps.publish.outcome == 'failure'
+        if: steps.chains.outcome == 'failure' || steps.joyjoy.outcome == 'failure' || steps.megabig.outcome == 'failure' || steps.jankara.outcome == 'failure' || steps.bigecho.outcome == 'failure' || steps.maneki.outcome == 'failure' || steps.cotedazur.outcome == 'failure' || steps.publish.outcome == 'failure'
         run: |
           echo "::error::Some data sources failed; see logs. Existing data was preserved where possible."
           exit 1

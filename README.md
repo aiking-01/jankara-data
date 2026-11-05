@@ -13,6 +13,7 @@ GitHub Actions が毎日 04:10（日本時間）に各チェーンの公式サ�
 | `bigecho.json.xz` | ビッグエコーの金額（変換できた店だけ） |
 | `maneki.json.xz` | まねきねこの金額（変換できた店だけ） |
 | `megabig.json.xz` | メガビッグの金額（変換できた店だけ） |
+| `joyjoy.json.xz` | JOYJOY公式ページの最低料金（「～」付き。確定料金ではありません） |
 | `kan.json.xz` | カラオケ館の金額（変換できた店だけ） |
 | `cotedazur.json.xz` | コート・ダジュールの公式料金JSONと30分の `regular` / `solo` 料金 |
 
@@ -26,6 +27,7 @@ GitHub Actions が毎日 04:10（日本時間）に各チェーンの公式サ�
 - `chains.json` と `source/` は公式サイトから読んだ元データです。確認日時だけの変更はコミットしません。
 - `scripts/convert.mjs` が料金表を金額へ変換し、読めない表は配りません。
 - `scripts/update_megabig.py` がメガビッグの公式店舗一覧と料金表を取得します。
+- `scripts/update_joyjoy_prices.py` がJOYJOY各店舗の公式最低料金を取得します。確定額としては扱いません。
 - `scripts/publish.py` が xz で圧縮して `dist/` に置きます。店の数が 1 割以上減ったファイルは前回のものを残します。
 - `scripts/web/bigecho.js` はアプリ本体と同じものです。変更するときは両方を直します。
 
