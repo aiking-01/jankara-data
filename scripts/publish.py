@@ -20,6 +20,7 @@ SOURCES = {
     "chains": ROOT / "chains.json",
     "jankara": ROOT / "source" / "prices.json",
     "bigecho": ROOT / "build" / "bigecho.json",
+    "joysound": ROOT / "build" / "joysound.json",
     "maneki": ROOT / "build" / "maneki.json",
     "kan": ROOT / "build" / "kan.json",
 }

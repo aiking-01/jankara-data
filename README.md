@@ -11,6 +11,7 @@ GitHub Actions が毎日 04:10（日本時間）に各チェーンの公式サ�
 | `chains.json.xz` | 10 チェーンの店舗（名前・住所・座標・公式の予約ページ） |
 | `jankara.json.xz` | ジャンカラの料金 |
 | `bigecho.json.xz` | ビッグエコーの金額（変換できた店だけ） |
+| `joysound.json.xz` | JOYSOUND 直営店の金額（変換できた店だけ） |
 | `maneki.json.xz` | まねきねこの金額（変換できた店だけ） |
 
 通信量を抑えるため、アプリは毎日 `manifest.json` だけを読み、sha256 が変わったファイルだけをダウンロードします。
@@ -22,6 +23,7 @@ GitHub Actions が毎日 04:10（日本時間）に各チェーンの公式サ�
 
 - `chains.json` と `source/` は公式サイトから読んだ元データです。確認日時だけの変更はコミットしません。
 - `scripts/convert.mjs` が料金表を金額へ変換し、読めない表は配りません。
+- `scripts/update_joysound_prices.py` が JOYSOUND 公式の各店舗ページから税込料金を取得します。30 分料金とフリータイムを学生・会員・一般別に配信し、条件付きの「JOY学」は比較料金に含めません。
 - `scripts/publish.py` が xz で圧縮して `dist/` に置きます。店の数が 1 割以上減ったファイルは前回のものを残します。
 - `scripts/web/bigecho.js` はアプリ本体と同じものです。変更するときは両方を直します。
 
