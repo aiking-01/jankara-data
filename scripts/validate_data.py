@@ -27,10 +27,11 @@ RAW = {
     "chain_prices": "source/chain_prices.json",
     "maneki_prices": "source/maneki_prices.json",
     "ocr": "source/ocr.json",
+    "banban_prices": "source/banban_prices.json",
 }
 BUILT = {"chains": RAW["chains"], "jankara": RAW["prices"],
          "bigecho": "build/bigecho.json", "maneki": "build/maneki.json",
-         "kan": "build/kan.json"}
+         "kan": "build/kan.json", "banban": RAW["banban_prices"]}
 PREFIX = {
     "ビッグエコー": ("be-", "shop.big-echo.jp"),
     "カラオケ館": ("kan-", "karaokekan.jp"),
@@ -399,7 +400,7 @@ def _generated(item, old, key, issues):
 
 def _validate_doc(name, current, previous, issues):
     fresh = _records(current, name)
-    old = _records(previous, name)
+    old = _records(previous, name) if previous.get("shops") else {}
     old_count, fresh_count = len(old), len(fresh)
     if fresh_count < old_count * (0.95 if name != "ocr" else 0.90):
         issues.append(f"{name}: 店舗数が異常に減少 ({old_count} → {fresh_count})")
@@ -436,6 +437,19 @@ def _validate_doc(name, current, previous, issues):
             _maneki_raw(item, was, key, issues)
         elif name == "ocr":
             _ocr(item, was, key, issues)
+        elif name == "banban_prices":
+            if not key.startswith("bb-"):
+                issues.append(f"{key}: BanBan以外の料金情報")
+            _generated(item, was, key, issues)
+            for special in item.get("specials", []):
+                if not isinstance(special, dict) or not _string(special.get("name"), 90) or not _string(special.get("eligible"), 90):
+                    issues.append(f"{key}: 条件付きプランの形式が不正")
+                    continue
+                if type(special.get("stay_minutes")) is not int or not 30 <= special["stay_minutes"] <= 720:
+                    issues.append(f"{key}: 条件付きプランの滞在時間が不正")
+                days = special.get("days")
+                if not isinstance(days, list) or len(days) != 4 or any(not isinstance(d, dict) or not _string(d.get("day")) or type(d.get("price")) is not int or not 100 <= d["price"] <= 30000 for d in days):
+                    issues.append(f"{key}: 条件付きプランの日別料金が不正")
         else:
             _generated(item, was, key, issues)
     return fresh, len(changed)
@@ -446,11 +460,16 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
     raw = {}
     for name, file in RAW.items():
         current = _json_bytes((ROOT / file).read_bytes(), file)
-        previous = _json_bytes(_old_bytes(reference, file), f"{reference}:{file}")
+        try:
+            previous = _json_bytes(_old_bytes(reference, file), f"{reference}:{file}")
+        except DataRejected:
+            if name != "banban_prices":
+                raise
+            previous = {"shops": {}}
         raw[name], changes = _validate_doc(name, current, previous, issues)
         summary.append(f"{name}: {len(raw[name])} 件 (変更 {changes} 件)")
     known = raw["chains"]
-    for kind, group in (("chain_prices", "ビッグエコー"), ("maneki_prices", "まねきねこ")):
+    for kind, group in (("chain_prices", "ビッグエコー"), ("maneki_prices", "まねきねこ"), ("banban_prices", "BanBan")):
         for key in raw[kind]:
             if key in known and known[key].get("chain") != group:
                 issues.append(f"{kind}/{key}: 店舗一覧とチェーンが矛盾")
@@ -467,10 +486,14 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
             old_file = f"dist/{name}.json.xz"
             try:
                 previous = _json_bytes(lzma.decompress(_old_bytes(reference, old_file)), f"{reference}:{old_file}")
+            except DataRejected:
+                if name != "banban":
+                    raise
+                previous = {"shops": {}}
             except lzma.LZMAError as exc:
                 raise DataRejected(f"{name}: 前回の公開 XZ が読み取れません") from exc
             fresh, changes = _validate_doc(name, current, previous, issues)
-            chain = {"bigecho": "ビッグエコー", "maneki": "まねきねこ", "kan": "カラオケ館"}[name]
+            chain = {"bigecho": "ビッグエコー", "maneki": "まねきねこ", "kan": "カラオケ館", "banban": "BanBan"}[name]
             for key in fresh:
                 if key not in known or known[key].get("chain") != chain:
                     if key not in _records(previous, name):
