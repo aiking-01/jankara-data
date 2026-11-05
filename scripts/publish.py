@@ -56,7 +56,7 @@ def compact(document: dict) -> dict:
 
 
 def json_bytes(document: dict) -> bytes:
-    # 圧縮前の配信JSONと同じバイト列をハッシュ検証にも使う。
+    # 配信される圧縮前の本文とSHA計算を必ず同じバイト列から作る。
     return json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
@@ -79,13 +79,14 @@ def publish_file(name: str, document: dict, old: dict | None, dist: Path = DIST,
     # 検証を通過した正常なRefreshだけ、manifest側の確認日時を進める。
     checked_at = max(document["updated_at"], old["checked_at"] if old else 0, confirmed_at)
     print(f"{name}: {count} 店 {len(data):,} バイト", flush=True)
-    return {"sha256": hashlib.sha256(data).hexdigest(), "json_sha256": hashlib.sha256(payload).hexdigest(),
+    return {"sha256": hashlib.sha256(data).hexdigest(),
+            "json_sha256": hashlib.sha256(payload).hexdigest(),
             "size": len(data), "count": count, "checked_at": checked_at}, True
 
 
 def main() -> int:
     # sourceの確認日時を時刻だけのコミットにせず、manifestだけ正常巡回を記録する。
-    allowed = {"chains", "jankara", "bigecho", "maneki"}
+    allowed = {"chains", "jankara", "bigecho", "maneki", "joyjoy", "joysound", "cotedazur"}
     raw = os.environ.get("REFRESH_CONFIRMED_DATA", "")
     confirmed = {name for name in raw.split(",") if name}
     if not confirmed.issubset(allowed):
