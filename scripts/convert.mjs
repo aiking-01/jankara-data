@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { convertBigEcho } from './web/bigecho.js';
+import { convertCotedazur } from './web/cotedazur.js';
 import { convertManeki } from './web/maneki.js';
 import { convertKanOcr } from './web/ocr.js';
 
@@ -20,12 +21,12 @@ function isEmpty(value) {
 }
 
 mkdirSync(join(ROOT, 'build'), { recursive: true });
-// コート・ダジュールは公式ページと同じ料金JSONを保持し、取得用メタデータだけを外す。
+// コート・ダジュールは公式料金JSONを保持し、engine.js 用の通常料金とヒトカラ料金も作る。
 const coteSource = JSON.parse(readFileSync(join(ROOT, 'source', 'cotedazur_prices.json'), 'utf8'));
 const coteShops = {};
 for (const [id, shop] of Object.entries(coteSource.shops)) {
   const { page, etag, last_modified, checked_at, ...officialData } = shop;
-  coteShops[id] = officialData;
+  coteShops[id] = { ...officialData, ...convertCotedazur(shop), checked_at };
 }
 writeFileSync(join(ROOT, 'build', 'cotedazur.json'), JSON.stringify({ updated_at: coteSource.updated_at, shops: coteShops }));
 console.log(`cotedazur: ${Object.keys(coteShops).length} shops`);

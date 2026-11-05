@@ -527,8 +527,11 @@ def _validate_doc(name, current, previous, issues):
             if not key.startswith("mn-"):
                 issues.append(f"{key}: まねきねこ以外の料金情報")
             _maneki_raw(item, was, key, issues)
-        elif name in ("cotedazur_prices", "cotedazur"):
+        elif name == "cotedazur_prices":
             _cotedazur_prices(item, was, key, issues)
+        elif name == "cotedazur":
+            _cotedazur_prices(item, was, key, issues)
+            _generated(item, was, key, issues)
         elif name == "ocr":
             _ocr(item, was, key, issues)
         else:
