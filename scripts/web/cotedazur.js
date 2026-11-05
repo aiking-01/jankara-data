@@ -97,3 +97,30 @@ export function convertCotedazur(shop) {
   }];
   return { regular, solo };
 }
+
+/**
+ * 一部の店舗で公式JSONの形式が変わっても、正常な店舗の料金は維持する。
+ * 大量脱落は配信事故として拒否し、旧データを残す。
+ */
+export function convertCotedazurShops(records, minimumRatio = 0.9) {
+  if (!records || typeof records !== 'object' || Array.isArray(records)) {
+    throw new Error('cotedazur: invalid source shops');
+  }
+  const shops = {};
+  const rejected = [];
+  for (const [id, shop] of Object.entries(records)) {
+    try {
+      const converted = convertCotedazur(shop);
+      const { page, etag, last_modified, checked_at, ...officialData } = shop;
+      shops[id] = { ...officialData, ...converted, checked_at };
+    } catch (error) {
+      rejected.push({ id, reason: String(error?.message ?? error) });
+    }
+  }
+  const original = Object.keys(records).length;
+  const accepted = Object.keys(shops).length;
+  if (!original || accepted < Math.ceil(original * minimumRatio)) {
+    throw new Error(`cotedazur: converted ${accepted}/${original} below safety threshold`);
+  }
+  return { shops, rejected, accepted, original };
+}
