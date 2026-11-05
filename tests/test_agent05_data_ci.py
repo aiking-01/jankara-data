@@ -58,6 +58,53 @@ class ManifestMonitorTests(unittest.TestCase):
         path.write_text(json.dumps(data))
         self.assertEqual(monitor.inspect(self.path, NOW), [])
 
+    def test_unpublished_optional_data_is_allowed(self):
+        self.assertEqual(monitor.inspect(self.path, NOW), [])
+
+    def test_all_published_optional_files_are_monitored(self):
+        for name in monitor.OPTIONAL:
+            path = self.path / "manifest.json"
+            manifest = json.loads(path.read_text())
+            payload = lzma.compress(b'{"schema_version":1,"shops":[{"id":1}]}')
+            manifest["files"][name] = {
+                "sha256": hashlib.sha256(payload).hexdigest(), "size": len(payload),
+                "count": 1, "checked_at": NOW,
+            }
+            path.write_text(json.dumps(manifest))
+            # manifestに登録された任意ファイルが無いときは必ず異常。
+            self.assertTrue(any(name in err and "読めません" in err
+                                for err in monitor.inspect(self.path, NOW)))
+            (self.path / f"{name}.json.xz").write_bytes(payload)
+            self.assertEqual(monitor.inspect(self.path, NOW), [])
+            (self.path / f"{name}.json.xz").write_bytes(b"broken")
+            self.assertTrue(any(name in err and "不一致" in err
+                                for err in monitor.inspect(self.path, NOW)))
+            (self.path / f"{name}.json.xz").write_bytes(payload)
+
+    def test_new_daily_sources_are_checked_for_freshness(self):
+        manifest_file = self.path / "manifest.json"
+        document = json.loads(manifest_file.read_text())
+        blob = lzma.compress(b'{"schema_version":1,"shops":[{"id":1}]}')
+        for name in ("joyjoy", "joysound", "cotedazur", "banban", "round1"):
+            document["files"][name] = {
+                "sha256": hashlib.sha256(blob).hexdigest(),
+                "size": len(blob), "count": 1, "checked_at": NOW - 100 * 3600,
+            }
+            (self.path / f"{name}.json.xz").write_bytes(blob)
+        manifest_file.write_text(json.dumps(document))
+        issues = monitor.inspect(self.path, NOW)
+        for name in ("joyjoy", "joysound", "cotedazur"):
+            self.assertTrue(any(name in issue and "最終正常確認" in issue for issue in issues))
+        for name in ("banban", "round1"):
+            self.assertFalse(any(name in issue and "最終正常確認" in issue for issue in issues))
+
+    def test_unknown_manifest_filename_is_not_used_as_a_path(self):
+        document = json.loads((self.path / "manifest.json").read_text())
+        document["files"]["../../bad"] = document["files"]["kan"]
+        (self.path / "manifest.json").write_text(json.dumps(document))
+        self.assertTrue(any("未対応のmanifestファイル名" in issue
+                            for issue in monitor.inspect(self.path, NOW)))
+
     def test_corrupted_xz_is_rejected(self):
         (self.path / "maneki.json.xz").write_bytes(b"broken")
         issues = monitor.inspect(self.path, NOW)
