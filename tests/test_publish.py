@@ -43,21 +43,21 @@ class PublishFileTest(unittest.TestCase):
         self.dist = Path(temp.name)
 
     def test_writes_file_and_entry(self):
-        entry, ok = publish.publish_file("prices", document(10), None, self.dist)
+        entry, ok = publish.publish_file("jankara", document(10), None, self.dist)
         self.assertTrue(ok)
         self.assertEqual(entry["count"], 10)
-        self.assertEqual(entry["size"], (self.dist / "prices.json.xz").stat().st_size)
+        self.assertEqual(entry["size"], (self.dist / "jankara.json.xz").stat().st_size)
 
     def test_sharp_drop_keeps_previous(self):
         old = {"sha256": "x", "size": 1, "count": 100, "checked_at": 5}
-        entry, ok = publish.publish_file("prices", document(89), old, self.dist)
+        entry, ok = publish.publish_file("jankara", document(89), old, self.dist)
         self.assertFalse(ok)
         self.assertIs(entry, old)
-        self.assertFalse((self.dist / "prices.json.xz").exists())
+        self.assertFalse((self.dist / "jankara.json.xz").exists())
 
     def test_checked_at_never_goes_back(self):
         old = {"sha256": "x", "size": 1, "count": 3, "checked_at": 2000000}
-        entry, _ = publish.publish_file("prices", document(3, 1000000), old, self.dist)
+        entry, _ = publish.publish_file("jankara", document(3, 1000000), old, self.dist)
         self.assertEqual(entry["checked_at"], 2000000)
 
 
