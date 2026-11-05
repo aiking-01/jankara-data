@@ -95,7 +95,7 @@ def _records(doc: dict, name: str) -> dict:
             if key in found:
                 raise DataRejected(f"{name}: 店舗 ID 重複 {key}")
             found[key] = item
-    if not found:
+    if not found and name not in ("cotedazur_prices", "cotedazur"):
         raise DataRejected(f"{name}: データが空です")
     return found
 
@@ -105,6 +105,17 @@ def _old_bytes(reference: str, path: str) -> bytes:
     if result.returncode:
         raise DataRejected(f"比較元 {reference}:{path} が読み取れません。保護のため中止")
     return result.stdout
+
+
+def _optional_old_bytes(reference: str, path: str) -> bytes | None:
+    """Return None only when a valid baseline ref does not contain a new dataset file."""
+    checked_ref = subprocess.run(["git", "rev-parse", "--verify", reference], cwd=ROOT, capture_output=True)
+    if checked_ref.returncode:
+        raise DataRejected(f"比較元 {reference} が読み取れません。保護のため中止")
+    exists = subprocess.run(["git", "cat-file", "-e", f"{reference}:{path}"], cwd=ROOT, capture_output=True)
+    if exists.returncode:
+        return None
+    return _old_bytes(reference, path)
 
 
 def _string(value, max_len=180):
@@ -484,7 +495,8 @@ def _validate_doc(name, current, previous, issues):
     old_count, fresh_count = len(old), len(fresh)
     if fresh_count < old_count * (0.95 if name != "ocr" else 0.90):
         issues.append(f"{name}: 店舗数が異常に減少 ({old_count} → {fresh_count})")
-    if fresh_count > old_count * 1.25 + 10:
+    first_cotedazur_snapshot = name in ("cotedazur_prices", "cotedazur") and old_count == 0 and fresh_count <= 150
+    if fresh_count > old_count * 1.25 + 10 and not first_cotedazur_snapshot:
         issues.append(f"{name}: 店舗数が異常に増加 ({old_count} → {fresh_count})")
     changed = [key for key, value in fresh.items() if _meaning(value) != _meaning(old.get(key))]
     if old_count > 50 and len(changed) > max(20, old_count * 0.35):
@@ -529,7 +541,9 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
     raw = {}
     for name, file in RAW.items():
         current = _json_bytes((ROOT / file).read_bytes(), file)
-        previous = _json_bytes(_old_bytes(reference, file), f"{reference}:{file}")
+        prior_bytes = _optional_old_bytes(reference, file) if name == "cotedazur_prices" else _old_bytes(reference, file)
+        previous = ({"schema_version": 1, "updated_at": 0, "shops": {}} if prior_bytes is None
+                    else _json_bytes(prior_bytes, f"{reference}:{file}"))
         raw[name], changes = _validate_doc(name, current, previous, issues)
         summary.append(f"{name}: {len(raw[name])} 件 (変更 {changes} 件)")
     known = raw["chains"]
@@ -550,7 +564,9 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
             current = _json_bytes((ROOT / file).read_bytes(), file)
             old_file = f"dist/{name}.json.xz"
             try:
-                previous = _json_bytes(lzma.decompress(_old_bytes(reference, old_file)), f"{reference}:{old_file}")
+                prior_bytes = _optional_old_bytes(reference, old_file) if name == "cotedazur" else _old_bytes(reference, old_file)
+                previous = ({"schema_version": 1, "updated_at": 0, "shops": {}} if prior_bytes is None
+                            else _json_bytes(lzma.decompress(prior_bytes), f"{reference}:{old_file}"))
             except lzma.LZMAError as exc:
                 raise DataRejected(f"{name}: 前回の公開 XZ が読み取れません") from exc
             fresh, changes = _validate_doc(name, current, previous, issues)
