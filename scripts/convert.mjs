@@ -32,35 +32,54 @@ for (const [name, [file, convert]] of Object.entries(TARGETS)) {
     for (const field of FIELDS) if (!isEmpty(converted[field])) shops[id][field] = converted[field];
   }
 
-  // B-30型は通常のOCRと別形式。確認済みの画像ハッシュに基づく
-  // source/kan_b30.json がある店舗だけ、30分料金を上書きする。
-  // フリータイムの終了時刻は元画像にないため配布対象には入れない。
-  let updatedAt = source.updated_at;
-  if (name === 'kan') {
-    const approvedPath = join(ROOT, 'source', 'kan_b30.json');
-    if (existsSync(approvedPath)) {
-      const approved = JSON.parse(readFileSync(approvedPath, 'utf8'));
-      if (approved.schema_version !== 1 || !approved.shops || Array.isArray(approved.shops)) {
-        throw new Error('source/kan_b30.json: invalid schema');
-      }
-      const registry = JSON.parse(readFileSync(join(ROOT, 'chains.json'), 'utf8'));
-      const registered = new Map((Array.isArray(registry.shops) ? registry.shops : Object.values(registry.shops))
-        .map((shop) => [shop.id, shop]));
-      for (const [id, shop] of Object.entries(approved.shops)) {
-        if (!/^kan-[A-Za-z0-9_-]+$/.test(id) || registered.get(id)?.chain !== 'カラオケ館') {
-          throw new Error(`source/kan_b30.json: unknown karaoke-kan shop ${id}`);
-        }
-        if (!Number.isInteger(shop.checked_at) || !Array.isArray(shop.regular) ||
-            shop.regular.length !== 1 || shop.regular[0]?.band !== '30分' ||
-            !Array.isArray(shop.regular[0]?.plans) || !shop.regular[0].plans.length ||
-            shop.regular[0].plans.some((plan) => plan.name !== '30分')) {
-          throw new Error(`source/kan_b30.json: invalid prices for ${id}`);
-        }
-        shops[id] = { checked_at: shop.checked_at, regular: shop.regular };
-      }
-      updatedAt = Math.max(updatedAt, approved.updated_at ?? 0);
-    }
-  }
   console.log(`${name}: ${Object.keys(shops).length} / ${total}`);
-  writeFileSync(join(ROOT, 'build', `${name}.json`), JSON.stringify({ updated_at: updatedAt, shops }));
+  writeFileSync(join(ROOT, 'build', `${name}.json`), JSON.stringify({ updated_at: source.updated_at, shops }));
+}
+ 
+// ROUND1 の B-30 画像は通常のカラオケ館 OCR とは別形式。
+// 目視確認・画像SHA256照合済みの店舗だけ配信する。金額未確認の初期状態で
+// 空の round1.json を配信して「対応店舗あり」と誤認させない。
+const round1Path = join(ROOT, 'source', 'round1_b30.json');
+if (existsSync(round1Path)) {
+  const data = JSON.parse(readFileSync(round1Path, 'utf8'));
+  if (data.schema_version !== 1 || !Number.isInteger(data.updated_at) ||
+      !data.shops || typeof data.shops !== 'object' || Array.isArray(data.shops)) {
+    throw new Error('source/round1_b30.json: invalid format');
+  }
+  const registry = JSON.parse(readFileSync(join(ROOT, 'chains.json'), 'utf8'));
+  const registered = new Map((Array.isArray(registry.shops) ? registry.shops : Object.values(registry.shops))
+    .map((shop) => [shop.id, shop]));
+  const shops = {};
+  for (const [id, shop] of Object.entries(data.shops)) {
+    if (!/^r1-[A-Za-z0-9_-]+$/.test(id) || registered.get(id)?.chain !== 'ROUND1') {
+      throw new Error(`source/round1_b30.json: unknown ROUND1 shop ${id}`);
+    }
+    if (!Number.isInteger(shop.checked_at) || !Array.isArray(shop.regular) ||
+        shop.regular.length !== 1 || shop.regular[0]?.band !== '30分' ||
+        !Array.isArray(shop.regular[0]?.plans) || !shop.regular[0].plans.length) {
+      throw new Error(`source/round1_b30.json: invalid regular table for ${id}`);
+    }
+    for (const plan of shop.regular[0].plans) {
+      if (plan.name !== '30分' || typeof plan.hours !== 'string' ||
+          !Array.isArray(plan.days) || plan.days.length !== 5) {
+        throw new Error(`source/round1_b30.json: invalid plan for ${id}`);
+      }
+      for (const row of plan.days) {
+        if (!['日祝', '土', '金祝前', '月火水木', '平日'].includes(row.day) ||
+            !row.prices || typeof row.prices !== 'object' || Array.isArray(row.prices) ||
+            Object.entries(row.prices).some(([customer, price]) =>
+              !['学生会員', '学生', 'シニア', '一般'].includes(customer) ||
+              !Number.isInteger(price) || price < 30 || price > 2000)) {
+          throw new Error(`source/round1_b30.json: invalid day prices for ${id}`);
+        }
+      }
+    }
+    shops[id] = { checked_at: shop.checked_at, regular: shop.regular };
+  }
+  if (Object.keys(shops).length) {
+    writeFileSync(join(ROOT, 'build', 'round1.json'), JSON.stringify({
+      updated_at: data.updated_at, shops,
+    }));
+    console.log(`round1: ${Object.keys(shops).length} verified shops`);
+  }
 }
