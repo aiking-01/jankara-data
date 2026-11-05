@@ -36,7 +36,7 @@ jobs:
         run: node scripts/convert.mjs
 
       - name: Check converter amounts and OCR
-        run: node --test tests/amounts.test.mjs tests/ocr.test.mjs
+        run: node --test tests/*.test.mjs
 
       - name: Validate source and published data against main
         run: |
