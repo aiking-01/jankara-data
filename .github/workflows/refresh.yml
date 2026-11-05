@@ -76,6 +76,10 @@ jobs:
           [[ "${{ steps.jankara.outcome }}" == "success" ]] && confirmed+=(jankara)
           [[ "${{ steps.bigecho.outcome }}" == "success" ]] && confirmed+=(bigecho)
           [[ "${{ steps.maneki.outcome }}" == "success" ]] && confirmed+=(maneki)
+          # 追加PRのステップが存在しない間は空値なので対象へ加えない。
+          [[ "${{ steps.joyjoy.outcome }}" == "success" ]] && confirmed+=(joyjoy)
+          [[ "${{ steps.joysound.outcome }}" == "success" ]] && confirmed+=(joysound)
+          [[ "${{ steps.cotedazur.outcome }}" == "success" ]] && confirmed+=(cotedazur)
           export REFRESH_CONFIRMED_DATA="$(IFS=,; echo "${confirmed[*]}")"
           bash scripts/push_data.sh "data: refresh" chains.json source
 
