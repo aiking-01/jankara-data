@@ -100,6 +100,11 @@ def main() -> int:
     old = json.loads(path.read_text(encoding="utf-8"))["files"] if path.exists() else {}
     if "jankara" not in old and "prices" in old:
         old["jankara"] = old.pop("prices")
+    # 公開済みチェーンのソースが統合競合で消えても、manifestを欠損公開しない。
+    unregistered = set(old) - set(SOURCES)
+    if unregistered:
+        print(f"::error::既配信の料金ソースがpublishから消失: {sorted(unregistered)}", flush=True)
+        return 1
     legacy_file, jankara_file = DIST / "prices.json.xz", DIST / "jankara.json.xz"
     if legacy_file.exists():
         if not jankara_file.exists():
