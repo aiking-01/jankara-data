@@ -542,10 +542,14 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
                                            allow_empty_previous=missing_baseline)
             chain = {"bigecho": "ビッグエコー", "maneki": "まねきねこ",
                      "kan": "カラオケ館", "joysound": "JOYSOUND"}[name]
-            for key in fresh:
+            for key, item in fresh.items():
                 if key not in known or known[key].get("chain") != chain:
                     if key not in _records(previous, name, allow_empty=missing_baseline):
                         issues.append(f"build/{name}/{key}: 店舗一覧に存在しない店舗の料金")
+                if name == "joysound":
+                    expected = raw["joysound_prices"].get(key, {}).get("sections")
+                    if item.get("source_rates") != expected:
+                        issues.append(f"build/{name}/{key}: 配布元の全料金行が一致しません")
             summary.append(f"build/{name}: {len(fresh)} 件 (変更 {changes} 件)")
         # Removing a source or unexpectedly losing a major part of the published
         # dataset must be stopped, even if the raw shop count stayed constant.

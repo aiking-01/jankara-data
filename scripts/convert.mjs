@@ -8,7 +8,7 @@ import { convertKanOcr } from './web/ocr.js';
 import { convertJoysound } from './web/joysound.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const FIELDS = ['regular', 'solo', 'week', 'flat', 'minStay', 'alerts'];
+const FIELDS = ['regular', 'solo', 'week', 'flat', 'minStay', 'alerts', 'source_rates'];
 // カラオケ館は料金表が画像なので、ocr.yml が読んだ結果から作る。ocr.json には他のチェーンの店も入っている
 const TARGETS = {
   bigecho: ['chain_prices.json', (shop) => convertBigEcho(shop.sections, shop.hours)],

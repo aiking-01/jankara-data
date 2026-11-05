@@ -96,5 +96,5 @@ export function convertJoysound(sections) {
       .map(({ band: _band, ...plan }) => plan);
     if (plans.length) regular.push({ band, customers: CUSTOMERS, plans, note: '' });
   }
-  return regular.length ? { regular, solo: [] } : { reason: 'no-readable-rates' };
+  return regular.length ? { regular, solo: [], source_rates: sections ?? [] } : { reason: 'no-readable-rates' };
 }
