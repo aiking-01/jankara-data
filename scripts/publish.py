@@ -9,7 +9,9 @@ from __future__ import annotations
 import hashlib
 import json
 import lzma
+import os
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -59,7 +61,7 @@ def encode(document: dict) -> bytes:
     return lzma.compress(text.encode("utf-8"), format=lzma.FORMAT_XZ, check=lzma.CHECK_CRC32, filters=XZ_FILTERS)
 
 
-def publish_file(name: str, document: dict, old: dict | None, dist: Path = DIST) -> tuple[dict, bool]:
+def publish_file(name: str, document: dict, old: dict | None, dist: Path = DIST, *, confirmed_at: int = 0) -> tuple[dict, bool]:
     """新しい manifest の項目と、公開できたかどうかを返す。"""
     count = len(document["shops"])
     if old and count < old["count"] * MIN_RATIO:
@@ -67,12 +69,22 @@ def publish_file(name: str, document: dict, old: dict | None, dist: Path = DIST)
         return old, False
     data = encode(compact(document))
     (dist / f"{name}.json.xz").write_bytes(data)
-    checked_at = max(document["updated_at"], old["checked_at"] if old else 0)
+    # 巡回済みでも元データが時刻だけの差分なら select_changes.py が巻き戻す。
+    # 検証を通過した正常なRefreshだけ、manifest側の確認日時を進める。
+    checked_at = max(document["updated_at"], old["checked_at"] if old else 0, confirmed_at)
     print(f"{name}: {count} 店 {len(data):,} バイト", flush=True)
     return {"sha256": hashlib.sha256(data).hexdigest(), "size": len(data), "count": count, "checked_at": checked_at}, True
 
 
 def main() -> int:
+    # sourceの確認日時を時刻だけのコミットにせず、manifestだけ正常巡回を記録する。
+    allowed = {"chains", "jankara", "bigecho", "maneki"}
+    raw = os.environ.get("REFRESH_CONFIRMED_DATA", "")
+    confirmed = {name for name in raw.split(",") if name}
+    if not confirmed.issubset(allowed):
+        print("::error::REFRESH_CONFIRMED_DATA contains unsupported source", flush=True)
+        return 1
+    confirmed_at = int(time.time())
     DIST.mkdir(exist_ok=True)
     path = DIST / "manifest.json"
     old = json.loads(path.read_text(encoding="utf-8"))["files"] if path.exists() else {}
@@ -87,7 +99,8 @@ def main() -> int:
     files, published = {}, True
     for name, source in SOURCES.items():
         document = json.loads(source.read_text(encoding="utf-8"))
-        files[name], ok = publish_file(name, document, old.get(name))
+        files[name], ok = publish_file(name, document, old.get(name),
+                                       confirmed_at=confirmed_at if name in confirmed else 0)
         published = published and ok
     manifest = {"schema_version": MANIFEST_VERSION, "files": files}
     path.write_text(json.dumps(manifest, separators=(",", ":"), sort_keys=True), encoding="utf-8", newline="")
