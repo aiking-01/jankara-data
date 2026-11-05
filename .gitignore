@@ -4,3 +4,6 @@ __pycache__/
 .venv/
 prices.csv
 build/
+
+# Actions OCRの一時画像・候補JSON
+work/

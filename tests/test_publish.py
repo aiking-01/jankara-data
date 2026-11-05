@@ -47,6 +47,9 @@ class PublishFileTest(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(entry["count"], 10)
         self.assertEqual(entry["size"], (self.dist / "jankara.json.xz").stat().st_size)
+        data = (self.dist / "jankara.json.xz").read_bytes()
+        self.assertEqual(entry["json_sha256"],
+                         __import__("hashlib").sha256(lzma.decompress(data)).hexdigest())
 
     def test_sharp_drop_keeps_previous(self):
         old = {"sha256": "x", "size": 1, "count": 100, "checked_at": 5}

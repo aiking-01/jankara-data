@@ -25,6 +25,9 @@ RAW = {
     "chains": "chains.json",
     "prices": "source/prices.json",
     "chain_prices": "source/chain_prices.json",
+    "joysound_prices": "source/joysound_prices.json",
+    "cotedazur_prices": "source/cotedazur_prices.json",
+    "banban_prices": "source/banban_prices.json",
     "maneki_prices": "source/maneki_prices.json",
     "megabig_prices": "source/megabig_prices.json",
     "ocr": "source/ocr.json",
@@ -33,7 +36,9 @@ RAW = {
 BUILT = {"chains": RAW["chains"], "jankara": RAW["prices"],
          "bigecho": "build/bigecho.json", "maneki": "build/maneki.json",
          "megabig": "build/megabig.json",
-         "kan": "build/kan.json", "joyjoy": "build/joyjoy.json"}
+         "kan": "build/kan.json", "joyjoy": "build/joyjoy.json",
+         "joysound": "build/joysound.json", "cotedazur": "build/cotedazur.json", "banban": RAW["banban_prices"],
+         "round1": "build/round1.json"}
 PREFIX = {
     "ビッグエコー": ("be-", "shop.big-echo.jp"),
     "カラオケ館": ("kan-", "karaokekan.jp"),
@@ -52,6 +57,8 @@ JAPANESE_REGION = re.compile(r"^(?:北海道|東京都|大阪府|京都府|.{2,3
 NO_HTML = re.compile(r"<(?:html|body|title|script|div|h[1-6]|!doctype)\b|(?:502 Bad Gateway|Access Denied|404 Not Found)", re.I)
 PRICE_TEXT = re.compile(r"^(?:[¥￥]?\s*)?(\d{1,3}(?:,\d{3})*|\d+)(?:\s*円)?$")
 MINIMUM_PRICE_TEXT = re.compile(r"^[¥￥]\s*(\d[\d,]*)~$")
+COTE_PRICE_FIELD = re.compile(r"(?:_30|_tax|_normal|_student|_ordinary)$|^ftfd_")
+COTE_PRICE_GROUPS = ("noon_weekday", "noon_weekend", "night_weekday", "night_weekend")
 MAX_ISSUES = 40
 
 
@@ -97,7 +104,7 @@ def _records(doc: dict, name: str, *, allow_empty: bool = False) -> dict:
             if key in found:
                 raise DataRejected(f"{name}: 店舗 ID 重複 {key}")
             found[key] = item
-    if not found and not allow_empty:
+    if not found and not allow_empty and name not in ("cotedazur_prices", "cotedazur", "megabig_prices", "megabig"):
         raise DataRejected(f"{name}: データが空です")
     return found
 
@@ -369,6 +376,128 @@ def _maneki_raw(item, old, key, issues):
         issues.append(f"{key}: PDF の配布元が不正")
 
 
+def _joysound_raw(item, key, issues):
+    sections = item.get("sections")
+    if not isinstance(sections, list) or not sections:
+        issues.append(f"{key}: JOYSOUND の料金表がありません")
+        return
+    valid_slot = False
+    for si, section in enumerate(sections):
+        if not isinstance(section, dict) or not _string(section.get("period"), 40) or not _string(section.get("day"), 100):
+            issues.append(f"{key}.sections[{si}]: 期間または曜日が不正")
+            continue
+        rows = section.get("rows")
+        if not isinstance(rows, list) or not rows:
+            issues.append(f"{key}.sections[{si}]: 行がありません")
+            continue
+        for ri, row in enumerate(rows):
+            path = f"{key}.sections[{si}].rows[{ri}]"
+            if not isinstance(row, dict) or not _string(row.get("label"), 180):
+                issues.append(f"{path}: プラン名が不正")
+                continue
+            prices = row.get("prices")
+            if not isinstance(prices, dict) or not prices or not set(prices).issubset({"学生", "シニア", "会員", "一般"}):
+                issues.append(f"{path}: 料金区分が不正")
+                continue
+            usable = False
+            for customer, price in prices.items():
+                if price is not None and (type(price) is not int or not 1 <= price <= 30000):
+                    issues.append(f"{path}/{customer}: 不自然な料金 {price!r}")
+                elif price is not None:
+                    usable = True
+            if not usable:
+                issues.append(f"{path}: 有効な金額がありません")
+            valid_slot = valid_slot or ("30分" in row["label"] and usable)
+            drinks = row.get("drinks", {})
+            if not isinstance(drinks, dict) or not set(drinks).issubset({"学生", "シニア", "会員", "一般"}) or any(
+                not isinstance(value, str) for value in drinks.values()
+            ):
+                issues.append(f"{path}: 飲み物条件が不正")
+    page = item.get("page")
+    parsed = urlsplit(page or "")
+    if parsed.scheme != "https" or parsed.hostname != "shop.joysound.com" or not parsed.path.startswith("/shop/"):
+        issues.append(f"{key}: JOYSOUND 料金ページ URL が不正")
+    if not valid_slot:
+        issues.append(f"{key}: 通常の30分料金がありません")
+
+
+def _cotedazur_prices(item, old, key, issues):
+    if not key.startswith("cd-") or type(item.get("shop_code")) is not int or str(item["shop_code"]) != key.removeprefix("cd-"):
+        issues.append(f"{key}: 店舗コードと料金IDが一致しません")
+    if not _string(item.get("shop_name"), 120):
+        issues.append(f"{key}: 料金JSONの店舗名が不正")
+    plans = item.get("price_plan")
+    if not isinstance(plans, list) or not plans or len(plans) > 30:
+        issues.append(f"{key}: price_plan が空、または形式が不正")
+        return
+
+    for index, plan in enumerate(plans):
+        if not isinstance(plan, dict) or not isinstance(plan.get("label_name"), str):
+            issues.append(f"{key}.price_plan[{index}]: 料金期間が不正")
+            continue
+        for group in COTE_PRICE_GROUPS:
+            rows = plan.get(group)
+            if rows is not None and (not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows)):
+                issues.append(f"{key}.price_plan[{index}].{group}: 料金行が不正")
+
+    values = {}
+    has_30_minute_price = False
+
+    def visit(value, path="price_plan"):
+        nonlocal has_30_minute_price
+        if isinstance(value, dict):
+            for field, child in value.items():
+                child_path = f"{path}.{field}"
+                if COTE_PRICE_FIELD.search(field):
+                    if child is None or (isinstance(child, str) and child.strip() in ("", "-", "ー", "－")):
+                        continue
+                    if isinstance(child, bool):
+                        issues.append(f"{key}.{child_path}: 金額が boolean です")
+                        continue
+                    normalized = unicodedata.normalize("NFKC", str(child)).replace(",", "").strip()
+                    if not re.fullmatch(r"\d+", normalized):
+                        issues.append(f"{key}.{child_path}: 金額の形式が不正 ({child!r})")
+                        continue
+                    amount = int(normalized)
+                    limit = 20000 if field.endswith("_30") else 100000
+                    if amount > limit:
+                        issues.append(f"{key}.{child_path}: 金額の上限を超えています ({amount})")
+                        continue
+                    values[child_path] = amount
+                    if field.endswith("_30"):
+                        has_30_minute_price = True
+                elif isinstance(child, (dict, list)):
+                    visit(child, child_path)
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                visit(child, f"{path}[{index}]")
+
+    visit(plans)
+    if not has_30_minute_price:
+        issues.append(f"{key}: 30分料金がありません")
+    if old:
+        before = {}
+        # Older records may include fetch metadata that is absent from dist.
+        def old_visit(value, path="price_plan"):
+            if isinstance(value, dict):
+                for field, child in value.items():
+                    child_path = f"{path}.{field}"
+                    if COTE_PRICE_FIELD.search(field):
+                        if child is None or (isinstance(child, str) and child.strip() in ("", "-", "ー", "－")):
+                            continue
+                        normalized = unicodedata.normalize("NFKC", str(child)).replace(",", "").strip()
+                        if re.fullmatch(r"\d+", normalized):
+                            before[child_path] = int(normalized)
+                    elif isinstance(child, (dict, list)):
+                        old_visit(child, child_path)
+            elif isinstance(value, list):
+                for index, child in enumerate(value):
+                    old_visit(child, f"{path}[{index}]")
+        old_visit(old.get("price_plan", []))
+        if before and len(values) < len(before) * 0.65:
+            issues.append(f"{key}: 料金セルが大量に欠落")
+        _price_delta(before, values, key, issues)
+
 def _megabig_raw(item, old, key, issues):
     sections = item.get("sections")
     if not isinstance(sections, list) or not sections:
@@ -531,7 +660,7 @@ def _joyjoy(item, old, key, issues, *, require_checked_at=False):
 
 def _validate_doc(name, current, previous, issues, *, allow_empty_old=False):
     fresh = _records(current, name)
-    old = _records(previous, name, allow_empty=allow_empty_old or name in ("megabig_prices", "megabig"))
+    old = _records(previous, name, allow_empty=allow_empty_old or name in ("megabig_prices", "megabig", "cotedazur_prices", "cotedazur"))
     old_count, fresh_count = len(old), len(fresh)
     if not allow_empty_old and fresh_count < old_count * (0.95 if name != "ocr" else 0.90):
         issues.append(f"{name}: 店舗数が異常に減少 ({old_count} → {fresh_count})")
@@ -566,11 +695,33 @@ def _validate_doc(name, current, previous, issues, *, allow_empty_old=False):
             if not key.startswith("mn-"):
                 issues.append(f"{key}: まねきねこ以外の料金情報")
             _maneki_raw(item, was, key, issues)
+        elif name == "cotedazur_prices":
+            _cotedazur_prices(item, was, key, issues)
+        elif name == "cotedazur":
+            _cotedazur_prices(item, was, key, issues)
+            _generated(item, was, key, issues)
+        elif name == "joysound_prices":
+            if not key.startswith("js-"):
+                issues.append(f"{key}: JOYSOUND 以外の料金情報")
+            _joysound_raw(item, key, issues)
         elif name == "megabig_prices":
             if not key.startswith("mb-"): issues.append(f"{key}: メガビッグ以外の料金情報")
             _megabig_raw(item, was, key, issues)
         elif name == "ocr":
             _ocr(item, was, key, issues)
+        elif name in ("banban_prices", "banban"):
+            if not key.startswith("bb-"):
+                issues.append(f"{key}: BanBan以外の料金情報")
+            _generated(item, was, key, issues)
+            for special in item.get("specials", []):
+                if not isinstance(special, dict) or not _string(special.get("name"), 90) or not _string(special.get("eligible"), 90):
+                    issues.append(f"{key}: 条件付きプランの形式が不正")
+                    continue
+                if type(special.get("stay_minutes")) is not int or not 30 <= special["stay_minutes"] <= 720:
+                    issues.append(f"{key}: 条件付きプランの滞在時間が不正")
+                days = special.get("days")
+                if not isinstance(days, list) or len(days) != 4 or any(not isinstance(d, dict) or not _string(d.get("day")) or type(d.get("price")) is not int or not 100 <= d["price"] <= 30000 for d in days):
+                    issues.append(f"{key}: 条件付きプランの日別料金が不正")
         elif name in ("joyjoy_prices", "joyjoy"):
             _joyjoy(item, was, key, issues, require_checked_at=(name == "joyjoy_prices"))
         else:
@@ -583,15 +734,19 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
     raw = {}
     for name, file in RAW.items():
         current = _json_bytes((ROOT / file).read_bytes(), file)
-        missing_base = name in ("joyjoy_prices", "megabig_prices") and _missing_at_reference(reference, file)
+        missing_base = name in ("joyjoy_prices", "joysound_prices", "cotedazur_prices", "banban_prices", "megabig_prices") and _missing_at_reference(reference, file)
         previous = ({"schema_version": 1, "updated_at": 0, "shops": {}} if missing_base
                     else _json_bytes(_old_bytes(reference, file), f"{reference}:{file}"))
         raw[name], changes = _validate_doc(name, current, previous, issues, allow_empty_old=missing_base)
         summary.append(f"{name}: {len(raw[name])} 件 (変更 {changes} 件)")
     known = raw["chains"]
-    for kind, group in (("chain_prices", "ビッグエコー"), ("maneki_prices", "まねきねこ"), ("megabig_prices", "メガビッグ")):
+    for kind, group in (("chain_prices", "ビッグエコー"), ("maneki_prices", "まねきねこ"),
+                         ("megabig_prices", "メガビッグ"), ("joysound_prices", "JOYSOUND"),
+                         ("cotedazur_prices", "コート・ダジュール"), ("banban_prices", "BanBan")):
         for key in raw[kind]:
-            if key in known and known[key].get("chain") != group:
+            if kind in ("joysound_prices", "cotedazur_prices", "banban_prices") and (key not in known or known[key].get("chain") != group):
+                issues.append(f"{kind}/{key}: 店舗一覧にない JOYSOUND 料金レコード")
+            elif key in known and known[key].get("chain") != group:
                 issues.append(f"{kind}/{key}: 店舗一覧とチェーンが矛盾")
             elif key not in known and key not in _records(_json_bytes(_old_bytes(reference, RAW[kind]), RAW[kind]), kind):
                 issues.append(f"{kind}/{key}: 店舗一覧にない新規料金レコード")
@@ -607,9 +762,13 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
         for name, file in BUILT.items():
             if name in ("chains", "jankara"):
                 continue  # raw と同一: 既に検査済み
-            current = _json_bytes((ROOT / file).read_bytes(), file)
             old_file = f"dist/{name}.json.xz"
-            missing_base = name in ("joyjoy", "megabig") and _missing_at_reference(reference, old_file)
+            if name == "round1" and not (ROOT / file).exists():
+                if not _missing_at_reference(reference, old_file):
+                    issues.append("round1: 以前の配信データが突然消えています")
+                continue
+            current = _json_bytes((ROOT / file).read_bytes(), file)
+            missing_base = name in ("joyjoy", "joysound", "cotedazur", "banban", "round1", "megabig") and _missing_at_reference(reference, old_file)
             if missing_base:
                 previous = {"schema_version": 1, "updated_at": 0, "shops": {}}
             else:
@@ -620,11 +779,15 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
                     raise DataRejected(f"{name}: 前回の公開 XZ が読み取れません") from exc
             fresh, changes = _validate_doc(name, current, previous, issues, allow_empty_old=missing_base)
             chain = {"bigecho": "ビッグエコー", "maneki": "まねきねこ", "kan": "カラオケ館", "megabig": "メガビッグ",
-                     "joyjoy": "JOYJOY"}[name]
-            for key in fresh:
+                     "joyjoy": "JOYJOY", "joysound": "JOYSOUND", "cotedazur": "コート・ダジュール", "banban": "BanBan", "round1": "ROUND1"}[name]
+            for key, item in fresh.items():
                 if key not in known or known[key].get("chain") != chain:
                     if key not in _records(previous, name, allow_empty=missing_base):
                         issues.append(f"build/{name}/{key}: 店舗一覧に存在しない店舗の料金")
+                if name == "joysound":
+                    expected = raw["joysound_prices"].get(key, {}).get("sections")
+                    if item.get("source_rates") != expected:
+                        issues.append(f"build/{name}/{key}: 配布元の全料金行が一致しません")
             summary.append(f"build/{name}: {len(fresh)} 件 (変更 {changes} 件)")
         # Removing a source or unexpectedly losing a major part of the published
         # dataset must be stopped, even if the raw shop count stayed constant.
