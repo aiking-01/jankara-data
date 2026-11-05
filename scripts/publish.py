@@ -22,6 +22,7 @@ SOURCES = {
     "bigecho": ROOT / "build" / "bigecho.json",
     "maneki": ROOT / "build" / "maneki.json",
     "kan": ROOT / "build" / "kan.json",
+    "joyjoy": ROOT / "build" / "joyjoy.json",
 }
 # 前回よりこの割合を下回ったら、取得か変換の異常とみなして前回のファイルを残す
 MIN_RATIO = 0.9

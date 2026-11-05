@@ -12,6 +12,7 @@ GitHub Actions が毎日 04:10（日本時間）に各チェーンの公式サ�
 | `jankara.json.xz` | ジャンカラの料金 |
 | `bigecho.json.xz` | ビッグエコーの金額（変換できた店だけ） |
 | `maneki.json.xz` | まねきねこの金額（変換できた店だけ） |
+| `joyjoy.json.xz` | JOYJOY公式ページの最低料金（「～」付き。確定料金ではありません） |
 
 通信量を抑えるため、アプリは毎日 `manifest.json` だけを読み、sha256 が変わったファイルだけをダウンロードします。
 確認日時は `manifest.json` にあり、確認できなかった店にだけ店ごとの `checked_at` が残ります。
@@ -22,6 +23,7 @@ GitHub Actions が毎日 04:10（日本時間）に各チェーンの公式サ�
 
 - `chains.json` と `source/` は公式サイトから読んだ元データです。確認日時だけの変更はコミットしません。
 - `scripts/convert.mjs` が料金表を金額へ変換し、読めない表は配りません。
+- `scripts/update_joyjoy_prices.py` がJOYJOY各店舗の公式料金表を毎日取得し、時間帯・利用単位と「～」付き最低価格を保存します。金額は確定料金として扱わず、公式ページの注記も残します。
 - `scripts/publish.py` が xz で圧縮して `dist/` に置きます。店の数が 1 割以上減ったファイルは前回のものを残します。
 - `scripts/web/bigecho.js` はアプリ本体と同じものです。変更するときは両方を直します。
 
