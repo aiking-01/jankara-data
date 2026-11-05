@@ -110,7 +110,8 @@ def read_page(path: Path, solo: bool) -> dict:
                 x = 307 + 218 * ci
                 cell = crop(image, x, y + 96 + 80 * ri, x + 185, y + 173 + 80 * ri, factor)
                 values.append(number(cell, "red", f"{path.name}: {ti}/{ri}/{ci}"))
-            if values != sorted(set(values)):
+            # 同じ金額の区分は公式表でもあり得る。列順だけ確認する。
+            if values != sorted(values):
                 raise ExtractionError(f"{path}: 列の読み違いの疑い: {values}")
             rows.append(values)
         tables.append(rows)
