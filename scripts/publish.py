@@ -21,6 +21,7 @@ SOURCES = {
     "jankara": ROOT / "source" / "prices.json",
     "bigecho": ROOT / "build" / "bigecho.json",
     "maneki": ROOT / "build" / "maneki.json",
+    "megabig": ROOT / "build" / "megabig.json",
     "kan": ROOT / "build" / "kan.json",
 }
 # 前回よりこの割合を下回ったら、取得か変換の異常とみなして前回のファイルを残す
