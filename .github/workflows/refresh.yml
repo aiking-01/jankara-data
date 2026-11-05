@@ -15,6 +15,7 @@ on:
 
 permissions:
   contents: write
+  issues: write
 
 concurrency:
   group: jankara-json-refresh
@@ -69,10 +70,54 @@ jobs:
         run: |
           set -euo pipefail
           python scripts/select_changes.py
+          # 各取得処理が成功したデータのみ、検証後のmanifest確認日時を更新する。
+          confirmed=()
+          [[ "${{ steps.chains.outcome }}" == "success" ]] && confirmed+=(chains)
+          [[ "${{ steps.jankara.outcome }}" == "success" ]] && confirmed+=(jankara)
+          [[ "${{ steps.bigecho.outcome }}" == "success" ]] && confirmed+=(bigecho)
+          [[ "${{ steps.maneki.outcome }}" == "success" ]] && confirmed+=(maneki)
+          export REFRESH_CONFIRMED_DATA="$(IFS=,; echo "${confirmed[*]}")"
           bash scripts/push_data.sh "data: refresh" chains.json source
 
-      - name: Fail run when a step failed
-        if: steps.chains.outcome == 'failure' || steps.jankara.outcome == 'failure' || steps.bigecho.outcome == 'failure' || steps.maneki.outcome == 'failure' || steps.publish.outcome == 'failure'
+      - name: Check published manifest freshness and file integrity
+        id: freshness
+        if: steps.publish.outcome == 'success'
+        continue-on-error: true
+        run: python scripts/monitor_freshness.py --max-hours 72
+
+      - name: Notify maintainers about refresh failure or recovery
+        if: always()
+        id: notification
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
         run: |
-          echo "::error::Some data sources failed; see logs. Existing data was preserved where possible."
+          set -euo pipefail
+          failed=0
+          for outcome in "${{ steps.chains.outcome }}" "${{ steps.jankara.outcome }}" \
+                         "${{ steps.bigecho.outcome }}" "${{ steps.maneki.outcome }}" \
+                         "${{ steps.publish.outcome }}" "${{ steps.freshness.outcome }}"; do
+            if [[ "$outcome" != "success" ]]; then failed=1; fi
+          done
+          title='[Data CI] Refresh requires attention'
+          current="$(gh issue list --state open --limit 100 --json number,title \
+            --jq '.[] | select(.title=="[Data CI] Refresh requires attention") | .number' | head -n 1)"
+          if [[ "$failed" == 1 ]]; then
+            body="$(printf 'Refreshの失敗・配信鮮度の異常を検出しました。\n\n実行ログ: %s\n\n個別ステップの結果と公開manifestを確認してください。古い正常データは残し、検査を無効化しないでください。\n' \
+              "https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}")"
+            if [[ -z "$current" ]]; then
+              gh issue create --title "$title" --body "$body"
+            else
+              gh issue comment "$current" --body "$body"
+            fi
+          elif [[ -n "$current" ]]; then
+            gh issue comment "$current" --body "Refreshと配信manifestの正常化を確認しました: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            gh issue close "$current" --reason completed
+          fi
+
+      - name: Fail run when a step failed
+        if: steps.chains.outcome == 'failure' || steps.jankara.outcome == 'failure' || steps.bigecho.outcome == 'failure' || steps.maneki.outcome == 'failure' || steps.publish.outcome == 'failure' || steps.freshness.outcome == 'failure' || steps.notification.outcome == 'failure'
+        run: |
+          echo "::error::Refresh/manifest validation or incident notification failed. Published data remains protected."
           exit 1
