@@ -26,6 +26,7 @@ SOURCES = {
     "maneki": ROOT / "build" / "maneki.json",
     "kan": ROOT / "build" / "kan.json",
     "megabig": ROOT / "build" / "megabig.json",
+    "round1": ROOT / "build" / "round1.json",
     "banban": ROOT / "source" / "banban_prices.json",
     "cotedazur": ROOT / "build" / "cotedazur.json",
     "joyjoy": ROOT / "build" / "joyjoy.json",
@@ -118,6 +119,9 @@ def main() -> int:
             legacy_file.unlink()
     files, published = {}, True
     for name, source in SOURCES.items():
+        # ROUND1の登録済み・確認済み店舗がない間は空ファイルを公開しない。
+        if name == "round1" and not source.exists() and name not in old:
+            continue
         document = json.loads(source.read_text(encoding="utf-8"))
         files[name], ok = publish_file(name, document, old.get(name),
                                        confirmed_at=confirmed_at if name in confirmed else 0)

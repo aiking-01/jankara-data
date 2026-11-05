@@ -37,7 +37,8 @@ BUILT = {"chains": RAW["chains"], "jankara": RAW["prices"],
          "bigecho": "build/bigecho.json", "maneki": "build/maneki.json",
          "megabig": "build/megabig.json",
          "kan": "build/kan.json", "joyjoy": "build/joyjoy.json",
-         "joysound": "build/joysound.json", "cotedazur": "build/cotedazur.json", "banban": RAW["banban_prices"]}
+         "joysound": "build/joysound.json", "cotedazur": "build/cotedazur.json", "banban": RAW["banban_prices"],
+         "round1": "build/round1.json"}
 PREFIX = {
     "ビッグエコー": ("be-", "shop.big-echo.jp"),
     "カラオケ館": ("kan-", "karaokekan.jp"),
@@ -761,9 +762,13 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
         for name, file in BUILT.items():
             if name in ("chains", "jankara"):
                 continue  # raw と同一: 既に検査済み
-            current = _json_bytes((ROOT / file).read_bytes(), file)
             old_file = f"dist/{name}.json.xz"
-            missing_base = name in ("joyjoy", "joysound", "cotedazur", "banban", "megabig") and _missing_at_reference(reference, old_file)
+            if name == "round1" and not (ROOT / file).exists():
+                if not _missing_at_reference(reference, old_file):
+                    issues.append("round1: 以前の配信データが突然消えています")
+                continue
+            current = _json_bytes((ROOT / file).read_bytes(), file)
+            missing_base = name in ("joyjoy", "joysound", "cotedazur", "banban", "round1", "megabig") and _missing_at_reference(reference, old_file)
             if missing_base:
                 previous = {"schema_version": 1, "updated_at": 0, "shops": {}}
             else:
@@ -774,7 +779,7 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
                     raise DataRejected(f"{name}: 前回の公開 XZ が読み取れません") from exc
             fresh, changes = _validate_doc(name, current, previous, issues, allow_empty_old=missing_base)
             chain = {"bigecho": "ビッグエコー", "maneki": "まねきねこ", "kan": "カラオケ館", "megabig": "メガビッグ",
-                     "joyjoy": "JOYJOY", "joysound": "JOYSOUND", "cotedazur": "コート・ダジュール", "banban": "BanBan"}[name]
+                     "joyjoy": "JOYJOY", "joysound": "JOYSOUND", "cotedazur": "コート・ダジュール", "banban": "BanBan", "round1": "ROUND1"}[name]
             for key, item in fresh.items():
                 if key not in known or known[key].get("chain") != chain:
                     if key not in _records(previous, name, allow_empty=missing_base):

@@ -5,5 +5,5 @@ __pycache__/
 prices.csv
 build/
 
-# OCR候補・画像は確認用Actions artifactのみ
-work/banban_ocr/
+# Actions OCRの一時画像・候補JSON
+work/
