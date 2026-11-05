@@ -28,7 +28,7 @@ for attempt in $(seq 1 "$ATTEMPTS"); do
   git rebase -q origin/main
 
   node scripts/convert.mjs
-  node --test tests/amounts.test.mjs tests/ocr.test.mjs
+  node --test tests/*.test.mjs
   # Validate against latest main; scripts and OCR runs share the same gate.
   python scripts/validate_data.py --stage full --baseline origin/main
   # Publish must succeed completely: never push partial/old manifest data.
