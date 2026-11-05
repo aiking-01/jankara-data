@@ -26,11 +26,13 @@ RAW = {
     "prices": "source/prices.json",
     "chain_prices": "source/chain_prices.json",
     "maneki_prices": "source/maneki_prices.json",
+    "megabig_prices": "source/megabig_prices.json",
     "ocr": "source/ocr.json",
     "cotedazur_prices": "source/cotedazur_prices.json",
 }
 BUILT = {"chains": RAW["chains"], "jankara": RAW["prices"],
          "bigecho": "build/bigecho.json", "maneki": "build/maneki.json",
+         "megabig": "build/megabig.json",
          "kan": "build/kan.json", "cotedazur": "build/cotedazur.json"}
 PREFIX = {
     "ビッグエコー": ("be-", "shop.big-echo.jp"),
@@ -43,6 +45,7 @@ PREFIX = {
     "JOYJOY": ("jj-", "www.joyjoy.co.jp"),
     "CLUB DAM": ("dam-", "karaokeclub.jp"),
     "歌広場": ("uh-", "www.utahiro.com"),
+    "メガビッグ": ("mb-", "megakara.jp"),
 }
 CLOCK = {"updated_at", "checked_at", "changed_at", "etag", "last_modified"}
 JAPANESE_REGION = re.compile(r"^(?:北海道|東京都|大阪府|京都府|.{2,3}県)")
@@ -95,7 +98,7 @@ def _records(doc: dict, name: str) -> dict:
             if key in found:
                 raise DataRejected(f"{name}: 店舗 ID 重複 {key}")
             found[key] = item
-    if not found and name not in ("cotedazur_prices", "cotedazur"):
+    if not found and name not in ("cotedazur_prices", "cotedazur", "megabig_prices", "megabig"):
         raise DataRejected(f"{name}: データが空です")
     return found
 
@@ -447,6 +450,44 @@ def _cotedazur_prices(item, old, key, issues):
         _price_delta(before, values, key, issues)
 
 
+def _megabig_raw(item, old, key, issues):
+    sections = item.get("sections")
+    if not isinstance(sections, list) or not sections:
+        issues.append(f"{key}: 料金表がありません")
+        return
+    if old and old.get("sections") and len(sections) < len(old["sections"]) * 0.6:
+        issues.append(f"{key}: メガビッグの料金表が大量欠落")
+    has_slot = False
+    for i, section in enumerate(sections):
+        if not isinstance(section, dict):
+            issues.append(f"{key}: 料金セクションが不正")
+            continue
+        header, rows = section.get("header"), section.get("rows")
+        if not isinstance(header, list) or len(header) < 2 or not isinstance(rows, list):
+            issues.append(f"{key}.sections[{i}]: 表・ヘッダーの形式が変化")
+            continue
+        if any(not isinstance(value, str) for value in header):
+            issues.append(f"{key}.sections[{i}]: 見出しの型が不正")
+        if "30分" in unicodedata.normalize("NFKC", header[0]):
+            has_slot = True
+        if not rows:
+            issues.append(f"{key}.sections[{i}]: 金額行がありません")
+        for row in rows:
+            if (not isinstance(row, list) or len(row) != len(header)
+                    or any(not isinstance(value, str) for value in row)):
+                issues.append(f"{key}.sections[{i}]: 金額の列数が見出しと一致しません")
+                continue
+            for value in row[1:]:
+                match = PRICE_TEXT.fullmatch(unicodedata.normalize("NFKC", value).replace(" ", ""))
+                if not match or int(match[1].replace(",", "")) > 30000:
+                    issues.append(f"{key}.sections[{i}]: 金額が不正 ({value!r})")
+    if not has_slot:
+        issues.append(f"{key}: 30分料金表がありません")
+    page = item.get("page")
+    if page and (urlsplit(page).scheme != "https" or urlsplit(page).hostname != "megakara.jp"):
+        issues.append(f"{key}: 料金ページ URL が異常")
+
+
 def _ocr(item, old, key, issues):
     if item.get("chain") not in ("カラオケ館", "まねきねこ"):
         issues.append(f"{key}: OCR チェーンが不正")
@@ -495,7 +536,7 @@ def _validate_doc(name, current, previous, issues):
     old_count, fresh_count = len(old), len(fresh)
     if fresh_count < old_count * (0.95 if name != "ocr" else 0.90):
         issues.append(f"{name}: 店舗数が異常に減少 ({old_count} → {fresh_count})")
-    first_cotedazur_snapshot = name in ("cotedazur_prices", "cotedazur") and old_count == 0 and fresh_count <= 150
+    first_cotedazur_snapshot = name in ("cotedazur_prices", "cotedazur", "megabig_prices", "megabig") and old_count == 0 and fresh_count <= 150
     if fresh_count > old_count * 1.25 + 10 and not first_cotedazur_snapshot:
         issues.append(f"{name}: 店舗数が異常に増加 ({old_count} → {fresh_count})")
     changed = [key for key, value in fresh.items() if _meaning(value) != _meaning(old.get(key))]
@@ -532,6 +573,9 @@ def _validate_doc(name, current, previous, issues):
         elif name == "cotedazur":
             _cotedazur_prices(item, was, key, issues)
             _generated(item, was, key, issues)
+        elif name == "megabig_prices":
+            if not key.startswith("mb-"): issues.append(f"{key}: メガビッグ以外の料金情報")
+            _megabig_raw(item, was, key, issues)
         elif name == "ocr":
             _ocr(item, was, key, issues)
         else:
@@ -544,13 +588,13 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
     raw = {}
     for name, file in RAW.items():
         current = _json_bytes((ROOT / file).read_bytes(), file)
-        prior_bytes = _optional_old_bytes(reference, file) if name == "cotedazur_prices" else _old_bytes(reference, file)
+        prior_bytes = _optional_old_bytes(reference, file) if name in ("cotedazur_prices", "megabig_prices") else _old_bytes(reference, file)
         previous = ({"schema_version": 1, "updated_at": 0, "shops": {}} if prior_bytes is None
                     else _json_bytes(prior_bytes, f"{reference}:{file}"))
         raw[name], changes = _validate_doc(name, current, previous, issues)
         summary.append(f"{name}: {len(raw[name])} 件 (変更 {changes} 件)")
     known = raw["chains"]
-    for kind, group in (("chain_prices", "ビッグエコー"), ("maneki_prices", "まねきねこ"),
+    for kind, group in (("chain_prices", "ビッグエコー"), ("maneki_prices", "まねきねこ"), ("megabig_prices", "メガビッグ"),
                         ("cotedazur_prices", "コート・ダジュール")):
         for key in raw[kind]:
             if key in known and known[key].get("chain") != group:
@@ -567,13 +611,13 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
             current = _json_bytes((ROOT / file).read_bytes(), file)
             old_file = f"dist/{name}.json.xz"
             try:
-                prior_bytes = _optional_old_bytes(reference, old_file) if name == "cotedazur" else _old_bytes(reference, old_file)
+                prior_bytes = _optional_old_bytes(reference, old_file) if name in ("cotedazur", "megabig") else _old_bytes(reference, old_file)
                 previous = ({"schema_version": 1, "updated_at": 0, "shops": {}} if prior_bytes is None
                             else _json_bytes(lzma.decompress(prior_bytes), f"{reference}:{old_file}"))
             except lzma.LZMAError as exc:
                 raise DataRejected(f"{name}: 前回の公開 XZ が読み取れません") from exc
             fresh, changes = _validate_doc(name, current, previous, issues)
-            chain = {"bigecho": "ビッグエコー", "maneki": "まねきねこ", "kan": "カラオケ館",
+            chain = {"bigecho": "ビッグエコー", "maneki": "まねきねこ", "kan": "カラオケ館", "megabig": "メガビッグ",
                      "cotedazur": "コート・ダジュール"}[name]
             for key in fresh:
                 if key not in known or known[key].get("chain") != chain:
