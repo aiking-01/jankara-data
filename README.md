@@ -9,7 +9,7 @@ GitHub Actions が毎日 04:10（日本時間）に各チェーンの公式サ�
 |---|---|
 | `manifest.json` | 各ファイルの sha256、大きさ、店の数、確認日時 |
 | `chains.json.xz` | 10 チェーンの店舗（名前・住所・座標・公式の予約ページ） |
-| `prices.json.xz` | ジャンカラの料金 |
+| `jankara.json.xz` | ジャンカラの料金 |
 | `bigecho.json.xz` | ビッグエコーの金額（変換できた店だけ） |
 | `maneki.json.xz` | まねきねこの金額（変換できた店だけ） |
 

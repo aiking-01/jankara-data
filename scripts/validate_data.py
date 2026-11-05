@@ -28,7 +28,7 @@ RAW = {
     "maneki_prices": "source/maneki_prices.json",
     "ocr": "source/ocr.json",
 }
-BUILT = {"chains": RAW["chains"], "prices": RAW["prices"],
+BUILT = {"chains": RAW["chains"], "jankara": RAW["prices"],
          "bigecho": "build/bigecho.json", "maneki": "build/maneki.json",
          "kan": "build/kan.json"}
 PREFIX = {
@@ -461,7 +461,7 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
             issues.append(f"ocr/{key}: 店舗一覧とチェーンが矛盾")
     if stage == "full":
         for name, file in BUILT.items():
-            if name in ("chains", "prices"):
+            if name in ("chains", "jankara"):
                 continue  # raw と同一: 既に検査済み
             current = _json_bytes((ROOT / file).read_bytes(), file)
             old_file = f"dist/{name}.json.xz"

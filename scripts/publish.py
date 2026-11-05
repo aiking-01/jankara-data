@@ -18,7 +18,7 @@ MANIFEST_VERSION = 2
 SHOPS_VERSION = 1
 SOURCES = {
     "chains": ROOT / "chains.json",
-    "prices": ROOT / "source" / "prices.json",
+    "jankara": ROOT / "source" / "prices.json",
     "bigecho": ROOT / "build" / "bigecho.json",
     "maneki": ROOT / "build" / "maneki.json",
     "kan": ROOT / "build" / "kan.json",
@@ -76,6 +76,14 @@ def main() -> int:
     DIST.mkdir(exist_ok=True)
     path = DIST / "manifest.json"
     old = json.loads(path.read_text(encoding="utf-8"))["files"] if path.exists() else {}
+    if "jankara" not in old and "prices" in old:
+        old["jankara"] = old.pop("prices")
+    legacy_file, jankara_file = DIST / "prices.json.xz", DIST / "jankara.json.xz"
+    if legacy_file.exists():
+        if not jankara_file.exists():
+            legacy_file.replace(jankara_file)
+        else:
+            legacy_file.unlink()
     files, published = {}, True
     for name, source in SOURCES.items():
         document = json.loads(source.read_text(encoding="utf-8"))
