@@ -30,7 +30,7 @@ RAW = {
 }
 BUILT = {"chains": RAW["chains"], "jankara": RAW["prices"],
          "bigecho": "build/bigecho.json", "maneki": "build/maneki.json",
-         "kan": "build/kan.json"}
+         "kan": "build/kan.json", "round1": "build/round1.json"}
 PREFIX = {
     "ビッグエコー": ("be-", "shop.big-echo.jp"),
     "カラオケ館": ("kan-", "karaokekan.jp"),
@@ -463,14 +463,33 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
         for name, file in BUILT.items():
             if name in ("chains", "jankara"):
                 continue  # raw と同一: 既に検査済み
+            if name == "round1" and not (ROOT / file).exists():
+                # 確認済み店舗がない間はROUND1配布を開始しない。
+                if subprocess.run(["git", "cat-file", "-e", f"{reference}:dist/round1.json.xz"],
+                                  cwd=ROOT, capture_output=True).returncode == 0:
+                    issues.append("round1: 以前の配信データが突然消えています")
+                continue
             current = _json_bytes((ROOT / file).read_bytes(), file)
             old_file = f"dist/{name}.json.xz"
+            prior = None
             try:
-                previous = _json_bytes(lzma.decompress(_old_bytes(reference, old_file)), f"{reference}:{old_file}")
-            except lzma.LZMAError as exc:
-                raise DataRejected(f"{name}: 前回の公開 XZ が読み取れません") from exc
-            fresh, changes = _validate_doc(name, current, previous, issues)
-            chain = {"bigecho": "ビッグエコー", "maneki": "まねきねこ", "kan": "カラオケ館"}[name]
+                prior = _old_bytes(reference, old_file)
+            except DataRejected:
+                if name != "round1":
+                    raise
+            if prior is None:
+                fresh = _records(current, name)
+                changes = len(fresh)
+                for key, item in fresh.items():
+                    _generated(item, None, f"{name}/{key}", issues)
+            else:
+                try:
+                    previous = _json_bytes(lzma.decompress(prior), f"{reference}:{old_file}")
+                except lzma.LZMAError as exc:
+                    raise DataRejected(f"{name}: 前回の公開 XZ が読み取れません") from exc
+                fresh, changes = _validate_doc(name, current, previous, issues)
+            chain = {"bigecho": "ビッグエコー", "maneki": "まねきねこ",
+                     "kan": "カラオケ館", "round1": "ROUND1"}[name]
             for key in fresh:
                 if key not in known or known[key].get("chain") != chain:
                     if key not in _records(previous, name):
