@@ -73,7 +73,9 @@ def publish_file(name: str, document: dict, old: dict | None, dist: Path = DIST,
         return old, False
     compacted = compact(document)
     payload = json_bytes(compacted)
-    data = encode(compacted)
+    # 圧縮とJSON-SHAに同一の本文バイト列を直接使う。
+    data = lzma.compress(payload, format=lzma.FORMAT_XZ,
+                         check=lzma.CHECK_CRC32, filters=XZ_FILTERS)
     (dist / f"{name}.json.xz").write_bytes(data)
     # 巡回済みでも元データが時刻だけの差分なら select_changes.py が巻き戻す。
     # 検証を通過した正常なRefreshだけ、manifest側の確認日時を進める。
