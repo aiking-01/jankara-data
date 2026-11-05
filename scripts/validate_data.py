@@ -478,6 +478,7 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
                 if name != "round1":
                     raise
             if prior is None:
+                previous = {"schema_version": 1, "updated_at": 0, "shops": {}}
                 fresh = _records(current, name)
                 changes = len(fresh)
                 for key, item in fresh.items():
