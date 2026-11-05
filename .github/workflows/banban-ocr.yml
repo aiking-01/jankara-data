@@ -8,10 +8,12 @@ on:
       - 'scripts/extract_banban.py'
       - 'scripts/run_banban_ocr.py'
       - 'tests/banban_ocr_ci.py'
+      - 'ocr/banban_approved.json'
   push:
     branches: [main]
     paths:
       - 'source/banban_images/**'
+      - 'ocr/banban_approved.json'
   workflow_dispatch:
     inputs:
       shop_id:
@@ -96,7 +98,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends tesseract-ocr
       - name: Install dependencies
         run: python -m pip install -r requirements.txt -r requirements-banban.txt
-      - name: Extract prices from four images
+      # 既存の入力画像が承認台帳と一致しない限り、公開ステップへ進めない。
+      - name: Extract prices from four images and verify manual approval
         env:
           BB_SHOP_ID: ${{ inputs.shop_id || 'bb-00075' }}
           BB_WEEKDAY: ${{ inputs.weekday || '' }}
@@ -122,5 +125,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: banban-price-extraction
-          path: source/banban_prices.json
+          path: |
+            work/banban_ocr/
+            source/banban_prices.json
           retention-days: 14
