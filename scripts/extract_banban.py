@@ -82,6 +82,11 @@ def number(region: np.ndarray, color: str, label: str) -> int:
     return values[0]
 
 
+def prices_in_expected_order(values: list[int]) -> bool:
+    # 同額は公式表で正常。金額の区分が逆転している場合のみOCR疑義。
+    return len(values) == 4 and all(a <= b for a, b in zip(values, values[1:]))
+
+
 def read_page(path: Path, solo: bool) -> dict:
     with Image.open(path) as file:
         image = np.asarray(file.convert("RGB"))
@@ -111,7 +116,7 @@ def read_page(path: Path, solo: bool) -> dict:
                 cell = crop(image, x, y + 96 + 80 * ri, x + 185, y + 173 + 80 * ri, factor)
                 values.append(number(cell, "red", f"{path.name}: {ti}/{ri}/{ci}"))
             # 同じ金額の区分は公式表でもあり得る。列順だけ確認する。
-            if values != sorted(values):
+            if not prices_in_expected_order(values):
                 raise ExtractionError(f"{path}: 列の読み違いの疑い: {values}")
             rows.append(values)
         tables.append(rows)
