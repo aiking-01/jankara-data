@@ -40,13 +40,32 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Check ROUND1 B-30 targets
+        id: targets
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+
+          targets = json.loads(Path("ocr/round1_b30_targets.json").read_text(encoding="utf-8"))
+          if targets.get("schema_version") != 1 or not isinstance(targets.get("shops"), dict):
+              raise SystemExit("B-30対象店舗ファイルの形式が不正です")
+          if targets["shops"]:
+              print("ready=true")
+          else:
+              print("::notice::B-30対象店舗が未登録のため、画像取得と公開をスキップします")
+              print("ready=false")
+          PY
+
       - name: Install OCR dependencies
+        if: steps.targets.outputs.ready == 'true'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends tesseract-ocr
           python -m pip install "requests>=2.32,<3" "pillow>=10,<12" "numpy>=1.26,<3" "pytesseract>=0.3.13,<1"
 
       - name: Fetch and extract B-30 images
+        if: steps.targets.outputs.ready == 'true'
         id: extract
         run: |
           python ocr/run_round1_b30.py --config ocr/round1_b30_targets.json --output source/round1_b30.json --work work/round1_b30
@@ -57,7 +76,7 @@ jobs:
           PY
 
       - name: Upload OCR evidence and review drafts
-        if: always()
+        if: always() && steps.targets.outputs.ready == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: round1-b30-review
@@ -67,5 +86,5 @@ jobs:
 
       # 過去の確認済み料金を守るため、未確認の画像が1店でもあれば公開を止める。
       - name: Publish verified B-30 prices
-        if: steps.extract.outputs.publish == 'true'
+        if: ${{ steps.extract.outputs.publish == 'true' }}
         run: bash scripts/push_data.sh "data: verified B-30 prices" source/round1_b30.json

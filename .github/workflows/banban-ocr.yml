@@ -47,7 +47,7 @@ concurrency:
 
 jobs:
   ocr-smoke:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
@@ -82,7 +82,34 @@ jobs:
           # script rebases onto main and checks every generated output.
           ref: main
           fetch-depth: 0
+      # 画像未登録のpushは通常の状態。手動実行では画像不足を検出して失敗させる。
+      - name: Check automatic BanBan image inputs
+        id: inputs
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BB_SHOP_ID: ${{ inputs.shop_id || 'bb-00075' }}
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import os
+          from pathlib import Path
+
+          if os.environ["EVENT_NAME"] != "push":
+              print("ready=true")
+          else:
+              folder = Path("source/banban_images") / os.environ["BB_SHOP_ID"]
+              roles = ("weekday", "weekend", "solo_weekday", "solo_weekend")
+              found = [((folder / f"{role}.png").is_file()) for role in roles]
+              if all(found):
+                  print("ready=true")
+              elif any(found):
+                  print("::error::BanBanの画像が一部不足しています。4種類を揃えてください")
+                  raise SystemExit(1)
+              else:
+                  print("::notice::BanBan画像がまだ未登録のため、自動抽出をスキップします")
+                  print("ready=false")
+          PY
       - uses: actions/setup-python@v5
+        if: steps.inputs.outputs.ready == 'true'
         with:
           python-version: '3.12'
           cache: pip
@@ -90,16 +117,20 @@ jobs:
             requirements.txt
             requirements-banban.txt
       - uses: actions/setup-node@v4
+        if: steps.inputs.outputs.ready == 'true'
         with:
           node-version: '22'
       - name: Install Tesseract
+        if: steps.inputs.outputs.ready == 'true'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends tesseract-ocr
       - name: Install dependencies
+        if: steps.inputs.outputs.ready == 'true'
         run: python -m pip install -r requirements.txt -r requirements-banban.txt
       # 既存の入力画像が承認台帳と一致しない限り、公開ステップへ進めない。
       - name: Extract prices from four images and verify manual approval
+        if: steps.inputs.outputs.ready == 'true'
         env:
           BB_SHOP_ID: ${{ inputs.shop_id || 'bb-00075' }}
           BB_WEEKDAY: ${{ inputs.weekday || '' }}
@@ -114,14 +145,16 @@ jobs:
             --solo-weekday "$BB_SOLO_WEEKDAY" \
             --solo-weekend "$BB_SOLO_WEEKEND"
       - name: Discard timestamp-only source changes
+        if: steps.inputs.outputs.ready == 'true'
         run: python scripts/select_changes.py
       - name: Validate, publish XZ and push safely
+        if: steps.inputs.outputs.ready == 'true'
         run: |
           bash scripts/push_data.sh \
             "data: BanBan料金表を画像から更新" \
             source/banban_prices.json
       - name: Upload extracted JSON for review
-        if: always()
+        if: always() && steps.inputs.outputs.ready == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: banban-price-extraction
