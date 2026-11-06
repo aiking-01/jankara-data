@@ -111,8 +111,9 @@ jobs:
         run: |
           set -euo pipefail
           failed=0
-          for outcome in "${{ steps.chains.outcome }}" "${{ steps.jankara.outcome }}" \
-                         "${{ steps.bigecho.outcome }}" "${{ steps.maneki.outcome }}" \
+          for outcome in "${{ steps.chains.outcome }}" "${{ steps.megabig.outcome }}" \
+                         "${{ steps.jankara.outcome }}" "${{ steps.bigecho.outcome }}" \
+                         "${{ steps.maneki.outcome }}" \
                          "${{ steps.publish.outcome }}" "${{ steps.freshness.outcome }}"; do
             if [[ "$outcome" != "success" ]]; then failed=1; fi
           done

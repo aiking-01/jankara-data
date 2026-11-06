@@ -12,6 +12,11 @@ on:
   push:
     branches: [main]
     paths:
+      - '.github/workflows/banban-ocr.yml'
+      - 'requirements-banban.txt'
+      - 'scripts/extract_banban.py'
+      - 'scripts/run_banban_ocr.py'
+      - 'tests/banban_ocr_ci.py'
       - 'source/banban_images/**'
       - 'ocr/banban_approved.json'
   workflow_dispatch:
