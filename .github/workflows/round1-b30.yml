@@ -1,14 +1,13 @@
 name: Read ROUND1 B-30 price images
 
-# B-30型の4曜日表を定期取得。画像が変わったら確認用成果物を作り、
-# 目視確認済みのJSONとハッシュが合うときだけ配布料金を更新する。
+# 未登録時は成功扱いで終了し、未承認・画像変更時は公開を停止する。
 on:
   workflow_dispatch:
   schedule:
-    # 07:50 JST / 22:50 UTC (after the regular OCR workflow)
     - cron: '50 22 * * *'
   push:
-    branches: [main]
+    branches:
+      - main
     paths:
       - '.github/workflows/round1-b30.yml'
       - 'ocr/round1_b30_targets.json'
@@ -18,10 +17,6 @@ on:
 
 permissions:
   contents: write
-
-concurrency:
-  group: round1-b30-refresh
-  cancel-in-progress: false
 
 jobs:
   update:
@@ -40,51 +35,45 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Check ROUND1 B-30 targets
-        id: targets
+      - name: Extract and publish reviewed B-30 prices
+        shell: bash
         run: |
-          python - <<'PY' >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          targets="$(python - <<'PY'
           import json
           from pathlib import Path
-
-          targets = json.loads(Path("ocr/round1_b30_targets.json").read_text(encoding="utf-8"))
-          if targets.get("schema_version") != 1 or not isinstance(targets.get("shops"), dict):
+          doc = json.loads(Path("ocr/round1_b30_targets.json").read_text(encoding="utf-8"))
+          if doc.get("schema_version") != 1 or not isinstance(doc.get("shops"), dict):
               raise SystemExit("B-30対象店舗ファイルの形式が不正です")
-          if targets["shops"]:
-              print("ready=true")
-          else:
-              print("::notice::B-30対象店舗が未登録のため、画像取得と公開をスキップします")
-              print("ready=false")
+          print(len(doc["shops"]))
           PY
-
-      - name: Install OCR dependencies
-        if: steps.targets.outputs.ready == 'true'
-        run: |
+          )"
+          if [[ "$targets" == "0" ]]; then
+            echo "::notice::B-30対象店舗が未登録なので更新をスキップします"
+            exit 0
+          fi
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends tesseract-ocr
           python -m pip install "requests>=2.32,<3" "pillow>=10,<12" "numpy>=1.26,<3" "pytesseract>=0.3.13,<1"
-
-      - name: Fetch and extract B-30 images
-        if: steps.targets.outputs.ready == 'true'
-        id: extract
-        run: |
           python ocr/run_round1_b30.py --config ocr/round1_b30_targets.json --output source/round1_b30.json --work work/round1_b30
-          python - <<'PY' >> "$GITHUB_OUTPUT"
+          publish="$(python - <<'PY'
           import json
-          status = json.load(open("work/round1_b30/status.json", encoding="utf-8"))
-          print("publish=" + str(status["publish"]).lower())
+          from pathlib import Path
+          state = json.loads(Path("work/round1_b30/status.json").read_text(encoding="utf-8"))
+          print(str(state["publish"]).lower())
           PY
+          )"
+          if [[ "$publish" == "true" ]]; then
+            bash scripts/push_data.sh "data: verified B-30 prices" source/round1_b30.json
+          else
+            echo "::notice::新たに承認済みの料金変更がないため配信は維持します"
+          fi
 
       - name: Upload OCR evidence and review drafts
-        if: always() && steps.targets.outputs.ready == 'true'
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: round1-b30-review
           path: work/round1_b30/
           retention-days: 14
-          if-no-files-found: warn
-
-      # 過去の確認済み料金を守るため、未確認の画像が1店でもあれば公開を止める。
-      - name: Publish verified B-30 prices
-        if: ${{ steps.extract.outputs.publish == 'true' }}
-        run: bash scripts/push_data.sh "data: verified B-30 prices" source/round1_b30.json
+          if-no-files-found: ignore
