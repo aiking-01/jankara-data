@@ -96,6 +96,7 @@ jobs:
         run: |
           python - <<'PY' >> "$GITHUB_OUTPUT"
           import os
+          import sys
           from pathlib import Path
 
           if os.environ["EVENT_NAME"] != "push":
@@ -107,10 +108,10 @@ jobs:
               if all(found):
                   print("ready=true")
               elif any(found):
-                  print("::error::BanBanの画像が一部不足しています。4種類を揃えてください")
+                  print("::error::BanBanの画像が一部不足しています。4種類を揃えてください", file=sys.stderr)
                   raise SystemExit(1)
               else:
-                  print("::notice::BanBan画像がまだ未登録のため、自動抽出をスキップします")
+                  print("::notice::BanBan画像がまだ未登録のため、自動抽出をスキップします", file=sys.stderr)
                   print("ready=false")
           PY
       - uses: actions/setup-python@v5
