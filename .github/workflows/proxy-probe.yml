@@ -61,6 +61,31 @@ jobs:
         if: always()
         run: python -c "import os,sys; v=os.environ['PROXY_ENDPOINT']; sys.exit(0 if v != v.strip() or ' ' in v.strip() else 1)"
 
+      - name: Host resolves
+        if: always()
+        run: python -c "import os,socket,sys; sys.path.insert(0,'scripts'); import proxy_env; socket.getaddrinfo(proxy_env.endpoint_host(os.environ['PROXY_ENDPOINT']).strip('[]'), None)"
+
+      # PROXY_ENDPOINT に付いているポート（23900 以外かもしれない）
+      - name: Port in PROXY_ENDPOINT is 23900
+        if: always()
+        run: python -c "import os,sys; from urllib.parse import urlsplit; sys.exit(0 if urlsplit(os.environ['PROXY_ENDPOINT'].strip()).port == 23900 else 1)"
+
+      - name: Port in PROXY_ENDPOINT accepts TCP
+        if: always()
+        run: python -c "import os,socket; from urllib.parse import urlsplit; u=urlsplit(os.environ['PROXY_ENDPOINT'].strip()); socket.create_connection((u.hostname, u.port), timeout=10).close()"
+
+      - name: PROXY_ENDPOINT has a path
+        if: always()
+        run: python -c "import os,sys; from urllib.parse import urlsplit; sys.exit(0 if urlsplit(os.environ['PROXY_ENDPOINT'].strip()).path not in ('', '/') else 1)"
+
+      - name: PROXY_ENDPOINT scheme is http
+        if: always()
+        run: python -c "import os,sys; from urllib.parse import urlsplit; sys.exit(0 if urlsplit(os.environ['PROXY_ENDPOINT'].strip()).scheme == 'http' else 1)"
+
+      - name: PROXY_ENDPOINT scheme is socks
+        if: always()
+        run: python -c "import os,sys; from urllib.parse import urlsplit; sys.exit(0 if urlsplit(os.environ['PROXY_ENDPOINT'].strip()).scheme.startswith('socks') else 1)"
+
       - name: Port 23900 accepts TCP
         if: always()
         run: python -c "import os,socket,sys; sys.path.insert(0,'scripts'); import proxy_env; socket.create_connection((proxy_env.endpoint_host(os.environ['PROXY_ENDPOINT']).strip('[]'), 23900), timeout=10).close()"
