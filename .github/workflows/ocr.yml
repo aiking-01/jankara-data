@@ -45,10 +45,18 @@ jobs:
       - name: Install Python packages
         run: python -m pip install requests pypdfium2 pillow
 
+      - name: Configure crawl proxy
+        env:
+          PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
+          PROXY_TOKEN: ${{ secrets.PROXY_TOKEN }}
+          PROXY_ENDPOINT: ${{ secrets.PROXY_ENDPOINT }}
+        run: python scripts/proxy_env.py
+
       - name: Choose images to read
         id: plan
         run: |
-          python ocr/plan.py work
+          # 公式サイトの画像を読むときだけプロキシを通す
+          HTTP_PROXY="${CRAWL_PROXY:-}" HTTPS_PROXY="${CRAWL_PROXY:-}" python ocr/plan.py work
           python - <<'EOF' >> "$GITHUB_OUTPUT"
           import json, math
           targets = json.load(open("work/targets.json", encoding="utf-8"))

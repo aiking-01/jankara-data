@@ -44,43 +44,76 @@ jobs:
       - name: Test parsers
         run: python -m unittest discover -s tests -p "test_*.py" -v
 
+      # 公式サイトを読む手順だけがプロキシを通す（接続ごとに出口の IP が変わる）。
+      # git push と GitHub への通知は通さない。Secrets がなければ直接つなぐ
+      - name: Configure crawl proxy
+        env:
+          PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
+          PROXY_TOKEN: ${{ secrets.PROXY_TOKEN }}
+          PROXY_ENDPOINT: ${{ secrets.PROXY_ENDPOINT }}
+        run: python scripts/proxy_env.py
+
       - name: Update shops
         id: chains
+        env:
+          HTTP_PROXY: ${{ env.CRAWL_PROXY }}
+          HTTPS_PROXY: ${{ env.CRAWL_PROXY }}
         continue-on-error: true
         run: python scripts/update.py chains
 
       - name: Update MegaBig shops and prices
         id: megabig
+        env:
+          HTTP_PROXY: ${{ env.CRAWL_PROXY }}
+          HTTPS_PROXY: ${{ env.CRAWL_PROXY }}
         continue-on-error: true
         run: python scripts/update_megabig.py
 
       - name: Update Jankara prices
         id: jankara
+        env:
+          HTTP_PROXY: ${{ env.CRAWL_PROXY }}
+          HTTPS_PROXY: ${{ env.CRAWL_PROXY }}
         continue-on-error: true
         run: python scripts/update_prices.py
 
       - name: Update Big Echo prices
         id: bigecho
+        env:
+          HTTP_PROXY: ${{ env.CRAWL_PROXY }}
+          HTTPS_PROXY: ${{ env.CRAWL_PROXY }}
         continue-on-error: true
         run: python scripts/update_chain_prices.py
 
       - name: Update JOYSOUND prices
         id: joysound
+        env:
+          HTTP_PROXY: ${{ env.CRAWL_PROXY }}
+          HTTPS_PROXY: ${{ env.CRAWL_PROXY }}
         continue-on-error: true
         run: python scripts/update_joysound_prices.py
 
       - name: Update Maneki prices
         id: maneki
+        env:
+          HTTP_PROXY: ${{ env.CRAWL_PROXY }}
+          HTTPS_PROXY: ${{ env.CRAWL_PROXY }}
         continue-on-error: true
         run: python scripts/update_maneki_prices.py
 
       - name: Update JoyJoy minimum prices
         id: joyjoy
+        env:
+          HTTP_PROXY: ${{ env.CRAWL_PROXY }}
+          HTTPS_PROXY: ${{ env.CRAWL_PROXY }}
         continue-on-error: true
         run: python scripts/update_joyjoy_prices.py
 
       - name: Update Cote d'Azur prices
         id: cotedazur
+        env:
+          HTTP_PROXY: ${{ env.CRAWL_PROXY }}
+          HTTPS_PROXY: ${{ env.CRAWL_PROXY }}
         continue-on-error: true
         run: python scripts/update_cotedazur_prices.py
 

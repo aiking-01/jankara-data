@@ -35,6 +35,13 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Configure crawl proxy
+        env:
+          PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
+          PROXY_TOKEN: ${{ secrets.PROXY_TOKEN }}
+          PROXY_ENDPOINT: ${{ secrets.PROXY_ENDPOINT }}
+        run: python scripts/proxy_env.py
+
       - name: Extract and publish reviewed B-30 prices
         shell: bash
         run: |
@@ -55,7 +62,8 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends tesseract-ocr
           python -m pip install "requests>=2.32,<3" "pillow>=10,<12" "numpy>=1.26,<3" "pytesseract>=0.3.13,<1"
-          python ocr/run_round1_b30.py --config ocr/round1_b30_targets.json --output source/round1_b30.json --work work/round1_b30
+          # 公式サイトの画像を読むときだけプロキシを通す。push_data.sh の git push は通さない
+          HTTP_PROXY="${CRAWL_PROXY:-}" HTTPS_PROXY="${CRAWL_PROXY:-}" python ocr/run_round1_b30.py --config ocr/round1_b30_targets.json --output source/round1_b30.json --work work/round1_b30
           publish="$(python - <<'PY'
           import json
           from pathlib import Path
