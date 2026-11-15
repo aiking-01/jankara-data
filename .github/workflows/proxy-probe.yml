@@ -1,7 +1,8 @@
 name: Proxy probe
 
-# プロキシの方式ごとに、つながるかだけを確かめる。ジョブの成否は API で誰でも読めるので、
-# ログを開かずにどの方式が使えるかが分かる。巡回もデータの書き込みもしない。
+# プロキシにつながるかだけを確かめる。巡回もデータの書き込みもしない。
+# ログを開かなくても、API で読める手順ごとの成否でどこまで届いたかが分かるように、確認を手順に分け、
+# 前の確認が失敗しても後の確認を続ける。
 on:
   workflow_dispatch:
   push:
@@ -15,13 +16,12 @@ permissions:
 
 jobs:
   probe:
-    name: probe-${{ matrix.scheme }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    strategy:
-      fail-fast: false
-      matrix:
-        scheme: [http, socks5h]
+    env:
+      PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
+      PROXY_TOKEN: ${{ secrets.PROXY_TOKEN }}
+      PROXY_ENDPOINT: ${{ secrets.PROXY_ENDPOINT }}
     steps:
       - uses: actions/checkout@v4
 
@@ -29,11 +29,34 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Check the proxy
-        env:
-          PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
-          PROXY_TOKEN: ${{ secrets.PROXY_TOKEN }}
-          PROXY_ENDPOINT: ${{ secrets.PROXY_ENDPOINT }}
-        run: |
-          python -m pip install -q "requests>=2.32,<3" "PySocks>=1.7,<2"
-          python scripts/proxy_env.py --scheme ${{ matrix.scheme }} --require
+      - name: Install packages
+        run: python -m pip install -q "requests>=2.32,<3" "PySocks>=1.7,<2"
+
+      - name: Secret PROXY_USERNAME is set
+        if: always()
+        run: test -n "$PROXY_USERNAME"
+
+      - name: Secret PROXY_TOKEN is set
+        if: always()
+        run: test -n "$PROXY_TOKEN"
+
+      - name: Secret PROXY_ENDPOINT is set
+        if: always()
+        run: test -n "$PROXY_ENDPOINT"
+
+      # PROXY_ENDPOINT が IP だけか（方式やポートを含んでいないか）
+      - name: PROXY_ENDPOINT is a bare host
+        if: always()
+        run: python -c "import os,re,sys; sys.exit(0 if re.fullmatch(r'[0-9A-Za-z.\-]+', os.environ['PROXY_ENDPOINT'].strip()) else 1)"
+
+      - name: Port 23900 accepts TCP
+        if: always()
+        run: python -c "import os,socket; socket.create_connection((os.environ['PROXY_ENDPOINT'].strip(), 23900), timeout=10).close()"
+
+      - name: HTTP proxy works
+        if: always()
+        run: python scripts/proxy_env.py --scheme http --require
+
+      - name: SOCKS5 proxy works
+        if: always()
+        run: python scripts/proxy_env.py --scheme socks5h --require
