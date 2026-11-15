@@ -65,6 +65,11 @@ jobs:
         if: always()
         run: python -c "import os,socket,sys; sys.path.insert(0,'scripts'); import proxy_env; socket.getaddrinfo(proxy_env.endpoint_host(os.environ['PROXY_ENDPOINT']).strip('[]'), None)"
 
+      # 家庭内や VPN の内部アドレスだと GitHub の実行環境からは届かない
+      - name: Host is a public address
+        if: always()
+        run: python -c "import os,socket,sys,ipaddress; sys.path.insert(0,'scripts'); import proxy_env; h=proxy_env.endpoint_host(os.environ['PROXY_ENDPOINT']).strip('[]'); sys.exit(0 if all(ipaddress.ip_address(a[4][0]).is_global for a in socket.getaddrinfo(h, None)) else 1)"
+
       # PROXY_ENDPOINT に付いているポート（23900 以外かもしれない）
       - name: Port in PROXY_ENDPOINT is 23900
         if: always()
