@@ -1,3 +1,5 @@
 requests>=2.32,<3
 beautifulsoup4>=4.12,<5
 pypdfium2
+# プロキシの SOCKS5 方式（scripts/proxy_env.py）
+PySocks>=1.7,<2

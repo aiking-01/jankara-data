@@ -50,7 +50,9 @@ jobs:
           PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
           PROXY_TOKEN: ${{ secrets.PROXY_TOKEN }}
           PROXY_ENDPOINT: ${{ secrets.PROXY_ENDPOINT }}
-        run: python scripts/proxy_env.py
+        run: |
+          python -m pip install -q "requests>=2.32,<3" "PySocks>=1.7,<2"
+          python scripts/proxy_env.py
 
       - name: Choose images to read
         id: plan
