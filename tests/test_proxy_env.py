@@ -30,6 +30,21 @@ class ProxyEnvTest(unittest.TestCase):
         url = proxy_env.proxy_url({**SECRETS, "PROXY_TOKEN": "a@b:c/d"}, "socks5h")
         self.assertEqual(url, "socks5h://user:a%40b%3Ac%2Fd@203.0.113.5:23900")
 
+    def test_endpoint_host_strips_scheme_port_and_path(self):
+        cases = {
+            "203.0.113.5": "203.0.113.5",
+            " 203.0.113.5\n": "203.0.113.5",
+            "203.0.113.5:23900": "203.0.113.5",
+            "http://203.0.113.5:23900/": "203.0.113.5",
+            "socks5://user:pass@203.0.113.5:23900": "203.0.113.5",
+            "proxy.example.com": "proxy.example.com",
+            "2001:db8::1": "[2001:db8::1]",
+            "[2001:db8::1]:23900": "[2001:db8::1]",
+            "": "",
+        }
+        for value, host in cases.items():
+            self.assertEqual(proxy_env.endpoint_host(value), host, value)
+
     def test_missing_secret_means_direct_connection(self):
         for missing in SECRETS:
             self.assertIsNone(proxy_env.proxy_url({**SECRETS, missing: " "}))

@@ -28,8 +28,27 @@ CHECK_URL = "https://www.gstatic.com/generate_204"
 CHECK_TIMEOUT = 15
 
 
+def endpoint_host(value: str) -> str:
+    """PROXY_ENDPOINT から接続先だけを取り出す。方式、認証、ポート、パスが付いていても外す。
+
+    IPv6 は URL に入れるため [] で囲む。
+    """
+    host = value.strip()
+    if "://" in host:
+        host = host.split("://", 1)[1]
+    host = host.split("/", 1)[0].rsplit("@", 1)[-1].strip()
+    if host.startswith("["):
+        return host.split("]", 1)[0] + "]"
+    if host.count(":") == 1:
+        host = host.split(":", 1)[0]
+    elif host.count(":") > 1:
+        host = f"[{host}]"
+    return host
+
+
 def proxy_url(env: dict[str, str], scheme: str = "http") -> str | None:
-    user, token, host = (env.get(name, "").strip() for name in ("PROXY_USERNAME", "PROXY_TOKEN", "PROXY_ENDPOINT"))
+    user, token = (env.get(name, "").strip() for name in ("PROXY_USERNAME", "PROXY_TOKEN"))
+    host = endpoint_host(env.get("PROXY_ENDPOINT", ""))
     if not (user and token and host):
         return None
     return f"{scheme}://{quote(user, safe='')}:{quote(token, safe='')}@{host}:{PORT}"

@@ -44,14 +44,26 @@ jobs:
         if: always()
         run: test -n "$PROXY_ENDPOINT"
 
-      # PROXY_ENDPOINT が IP だけか（方式やポートを含んでいないか）
-      - name: PROXY_ENDPOINT is a bare host
+      # PROXY_ENDPOINT の形を値を出さずに調べる（成功 = その形を含む）
+      - name: PROXY_ENDPOINT has a scheme
         if: always()
-        run: python -c "import os,re,sys; sys.exit(0 if re.fullmatch(r'[0-9A-Za-z.\-]+', os.environ['PROXY_ENDPOINT'].strip()) else 1)"
+        run: python -c "import os,sys; sys.exit(0 if '://' in os.environ['PROXY_ENDPOINT'] else 1)"
+
+      - name: PROXY_ENDPOINT has one colon (port)
+        if: always()
+        run: python -c "import os,sys; sys.exit(0 if os.environ['PROXY_ENDPOINT'].split('://')[-1].count(':') == 1 else 1)"
+
+      - name: PROXY_ENDPOINT has several colons (IPv6)
+        if: always()
+        run: python -c "import os,sys; sys.exit(0 if os.environ['PROXY_ENDPOINT'].split('://')[-1].count(':') > 1 else 1)"
+
+      - name: PROXY_ENDPOINT has spaces or newlines
+        if: always()
+        run: python -c "import os,sys; v=os.environ['PROXY_ENDPOINT']; sys.exit(0 if v != v.strip() or ' ' in v.strip() else 1)"
 
       - name: Port 23900 accepts TCP
         if: always()
-        run: python -c "import os,socket; socket.create_connection((os.environ['PROXY_ENDPOINT'].strip(), 23900), timeout=10).close()"
+        run: python -c "import os,socket,sys; sys.path.insert(0,'scripts'); import proxy_env; socket.create_connection((proxy_env.endpoint_host(os.environ['PROXY_ENDPOINT']).strip('[]'), 23900), timeout=10).close()"
 
       - name: HTTP proxy works
         if: always()
