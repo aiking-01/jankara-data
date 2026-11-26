@@ -2,10 +2,11 @@
 // 通常料金とヒトカラ料金は別の公式欄から読み、30分料金だけを計算用にする。
 //
 // 読むのは「通常料金」1 期間だけの店。年末年始などの期間別の料金は、日付で効く料金表がアプリにないので読まない
-// （その店は「料金表を見る」になる）。通常料金 1 期間でも、次のどれかに当たれば読まない。
-// - start_date_time / end_date_time が、変換する日から 21 日先まで（アプリが配信データを使う最長の日数。
-//   その夜の続きの翌朝も含む）をすべて覆っていない
-// - 注記などに年末年始・特別料金・料金改定などの告知があり、その期間が 21 日先までと重なる、または期間の終わりを読めない
+// （その店は「料金表を見る」になる）。アプリの日付選びには上限がなく、利用者は何か月先の日付も選べるので、
+// 通常料金 1 期間でも、次のどれかに当たれば読まない。
+// - start_date_time が変換する日より後、または end_date_time が書かれている（終わりの後の料金が分からない）
+// - 注記などに年末年始・特別料金・料金改定などの告知があり、その期間がまだ終わっていない（前日の夜の残りも含む）、
+//   または期間の終わりを読めない
 // - 「税込」と書かれていない、または「税抜」「税別」と書かれている
 // - 昼夜の切り替え（switching_time など）が想定の形でない
 // 変換する日は JST の今日。テストや手で動かすときは引数か環境変数 CONVERT_TODAY（YYYY-MM-DD）で差し替える。
@@ -34,14 +35,13 @@ const PERIODS = [
     ],
   },
 ];
-// アプリは配信データを最長 21 日使い、利用者は先の日付も選べる
-export const WINDOW_DAYS = 21;
-// 夜の時間帯は翌朝まで続くので、範囲の前後に 1 日ずつ足して確かめる（前日の夜の残りと、21 日先の夜の続き）
+// 夜の時間帯は翌朝まで続くので、前日に終わった期間は今日の朝まで効いているとみなす
 const OVERNIGHT_DAYS = 1;
 // 期間の告知とみなす言葉。学生の「グループ限定」などに当たらないよう、期間を表す言葉に絞る
-const NOTICE = /年末|年始|年明け|大晦日|クリスマス|特別料金|特別期間|特定日|改定|繁忙|お盆|ゴールデンウィーク|GW|期間中|期間限定|別料金|料金が異な/;
-// 言葉がなくても、日付の書かれた行は期間の告知として扱う（今の公式の注記には日付の行がない）
-const DATED = /\d{1,2}月\d{1,2}日|(?:^|\D)\d{1,2}\/\d{1,2}(?!\d)/;
+const NOTICE = /年末|年始|年明け|大晦日|クリスマス|特別料金|特別期間|特別営業|特定日|改定|改訂|値上げ|値下げ|料金変更|繁忙|お盆|ゴールデンウィーク|GW|期間中|期間限定|別料金|料金が異な|料金が変|臨時|イベント/;
+// 言葉がなくても、日付の書かれた行は期間の告知として扱う（今の公式の注記には日付の行がない）。
+// 「12月24日」「12/24」「12.24」の形を日付とみなす（「1,610」のような金額や「18:00」の時刻には当たらない）
+const DATED = /\d{1,2}月\d{1,2}日|(?:^|[^\d.,/])\d{1,2}[/.]\d{1,2}(?![\d.,/])/;
 const TAX_EXCLUDED = /税抜|税別|外税|\+税/;
 const DAY_MS = 86400000;
 
@@ -144,8 +144,9 @@ function officialDay(text) {
   return day;
 }
 
-// 期間が、今日から 21 日先まで（その夜の続きの翌朝も含む）のすべての日を覆っているか。覆っていなければ理由を返す。
-// 公式の pricelist.js も start_date_time / end_date_time で表示する期間を決めている（空なら制限なし）
+// 期間が、今日から先のすべての日を覆っているか。覆っていなければ理由を返す。
+// 公式の pricelist.js も start_date_time / end_date_time で表示する期間を決めている（空なら制限なし）。
+// アプリの日付選びには上限がないので、終わりの日時が書かれていれば、それが何か月先でも読まない
 function outsidePlan(plan, today) {
   const blank = (value) => value === '' || value === null || value === undefined;
   if (!blank(plan.start_date_time)) {
@@ -153,11 +154,7 @@ function outsidePlan(plan, today) {
     if (start === null) return `料金期間の始まりを読めません (${plan.start_date_time})`;
     if (start >= today) return `料金期間がまだ始まっていません (${plan.start_date_time})`;
   }
-  const end = plan.end_date_time;
-  if (blank(end)) return null;
-  const last = officialDay(end);
-  if (last === null) return `料金期間の終わりを読めません (${end})`;
-  if (last <= today + WINDOW_DAYS + OVERNIGHT_DAYS) return `料金期間が21日以内に終わります (${end})`;
+  if (!blank(plan.end_date_time)) return `料金期間の終わりが決まっています (${plan.end_date_time})`;
   return null;
 }
 
@@ -173,15 +170,20 @@ function nearestDay(year, month, day, today) {
   return best;
 }
 
-const DATE = /(?:(\d{4})年)?(?:(\d{1,2})月)?(\d{1,2})日|(?:(\d{4})\/)?(\d{1,2})\/(\d{1,2})/g;
+const DATE = /(?:(\d{4})年)?(?:(\d{1,2})月)?(\d{1,2})日|(?<![\d.,/])(?:(\d{4})[/.])?(\d{1,2})[/.](\d{1,2})(?![\d.,/])/g;
 // 日付の後ろの「(土)」「(祝)」などの曜日は読み飛ばす（NFKC で全角の括弧も半角になる）
 const WEEKDAY = String.raw`(?:\([月火水木金土日祝・]{1,4}\))?`;
 const RANGE_GAP = new RegExp(String.raw`^\s*${WEEKDAY}\s*(?:[~〜\-－]|から)\s*$`);
 const LIST_GAP = new RegExp(String.raw`^\s*${WEEKDAY}\s*[、,・]\s*$`);
 const OPEN_END = new RegExp(String.raw`^\s*${WEEKDAY}\s*(?:以降|以後|から|より|[~〜\-－])`);
+// 「1月11日まで」「(~1月11日)」のように終わりの側だけが書かれた日付
+const UNTIL = new RegExp(String.raw`^\s*${WEEKDAY}\s*(?:まで|迄)`);
+const FROM_BEFORE = /[~〜\-－]\s*$/;
 
-// 告知の文から期間を取り出す。「12月11日、14日～17日」「12月24日、25日」のように「、」で並べた日はその 1 日、
-// それ以外で終わりが書かれていない日付（「12月1日より」「12月24日は」など）は、その日から終わりの分からない期間とする
+// 告知の文から期間を [始まり, 終わり] で取り出す（分からない側は null）。
+// 「12月11日、14日～17日」「12月24日、25日」のように「、」で並べた日はその 1 日、「1月11日まで」「～1月11日」は
+// その日に終わる期間、それ以外で終わりが書かれていない日付（「12月1日より」「12月24日は」など）は、
+// その日から終わりの分からない期間とする
 function noticeRanges(text, today) {
   const dates = [];
   let month = null;
@@ -200,9 +202,12 @@ function noticeRanges(text, today) {
     const start = nearestDay(first.year, first.month, first.day, today);
     if (start === null) return null;
     const next = dates[i + 1];
-    const listed = i > 0 && LIST_GAP.test(text.slice(dates[i - 1].end, first.at));
+    const before = text.slice(i > 0 ? dates[i - 1].end : 0, first.at);
+    const listed = i > 0 && LIST_GAP.test(before);
     const after = text.slice(first.end, next ? next.at : text.length);
-    if (next && RANGE_GAP.test(after)) {
+    if (UNTIL.test(after) || (!listed && FROM_BEFORE.test(before))) {
+      ranges.push([null, start]);
+    } else if (next && RANGE_GAP.test(after)) {
       let last;
       if (next.year) last = dayNumber(next.year, next.month, next.day);
       else {
@@ -229,11 +234,10 @@ function strings(value, found = []) {
   return found;
 }
 
-// 期間の告知が、今日から 21 日先まで（前日の夜の残りと 21 日先の夜の続きも含む）と重なるか。
-// 重なる、または読めなければ理由を返す
-function noticeInWindow(plan, today) {
-  const windowStart = today - OVERNIGHT_DAYS;
-  const windowEnd = today + WINDOW_DAYS + OVERNIGHT_DAYS;
+// 期間の告知のうち、まだ終わっていない（前日の夜の残りも含む）もの、または読めないものがあれば理由を返す。
+// アプリの日付選びには上限がないので、何か月先の期間でも、告知がある間は読まない
+function noticeProblem(plan, today) {
+  const ended = today - OVERNIGHT_DAYS;
   // 期間の日時の項目は outsidePlan が見る
   const { start_date_time: _from, end_date_time: _until, ...texts } = plan;
   const lines = strings(texts).flatMap((raw) => normalized(raw).split('\n')).map((line) => line.trim());
@@ -241,9 +245,9 @@ function noticeInWindow(plan, today) {
     if (!NOTICE.test(text) && !DATED.test(text)) continue;
     const ranges = noticeRanges(text, today);
     if (!ranges || !ranges.length) return `期間の告知があり、期間を読めません (${text.slice(0, 40)})`;
-    for (const [start, last] of ranges) {
-      if (last === null && start <= windowEnd) return `期間の告知があり、終わりの日を読めません (${text.slice(0, 40)})`;
-      if (last !== null && start <= windowEnd && last >= windowStart) return `21日以内に期間の告知があります (${text.slice(0, 40)})`;
+    for (const [, last] of ranges) {
+      if (last === null) return `期間の告知があり、終わりの日を読めません (${text.slice(0, 40)})`;
+      if (last >= ended) return `終わっていない期間の告知があります (${text.slice(0, 40)})`;
     }
   }
   return null;
@@ -267,7 +271,7 @@ export function convertCotedazur(shop, { today } = {}) {
   const plan = plans[0];
   if (plan.day_of_week_select !== true) throw new Error(`${code}: 曜日別料金の構成が変わりました`);
   const day = todayOf(today);
-  const problem = outsidePlan(plan, day) ?? noticeInWindow(plan, day) ?? taxProblem(plan);
+  const problem = outsidePlan(plan, day) ?? noticeProblem(plan, day) ?? taxProblem(plan);
   if (problem) throw new Error(`${code}: ${problem}`);
   let clock;
   try {

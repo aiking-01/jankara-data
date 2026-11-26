@@ -86,71 +86,88 @@ test('年末年始の期間別の料金は今までどおり読まない', () =>
   }
 });
 
-test('通常料金でも、今日から21日先までを覆っていない期間なら読まない', () => {
+test('通常料金でも、終わりの日時が書かれた期間や、まだ始まっていない期間は読まない', () => {
   const shop = cases.shops['cd-10150'];
   const at = (start, end) => withPlan(shop, (plan) => { plan.start_date_time = start; plan.end_date_time = end; });
   assert.ok(convert(at('2026-10-01 10:00', '')).regular.length);
-  // 21 日先（12/17）の夜は 12/18 の朝まで続くので、12/19 まで続くなら読む
-  assert.ok(convert(at('2026-10-01 10:00', '2026-12-19 00:00')).regular.length);
-  assert.throws(() => convert(at('2026-10-01 10:00', '2026-12-18 23:59')), /21日以内に終わります/);
-  assert.throws(() => convert(at('2026-10-01 10:00', '2026-12-17 23:59')), /21日以内に終わります/);
+  // アプリの日付選びには上限がないので、終わりが何か月先でも、終わりの後の料金が分からない期間は読まない
+  assert.throws(() => convert(at('2026-10-01 10:00', '2026-12-20 23:59')), /終わりが決まっています/);
+  assert.throws(() => convert(at('2026-10-01 10:00', '2027-03-31 23:59')), /終わりが決まっています/);
+  assert.throws(() => convert(at('2026-10-01 10:00', '2026-11-30 10:00')), /終わりが決まっています/);
+  assert.throws(() => convert(at('2026-10-01 10:00', '年明けまで')), /終わりが決まっています/);
   // 始まりは前日まで（今日の開店より前に始まっていること）
   assert.ok(convert(at('2026-11-25 10:00', '')).regular.length);
-  assert.throws(() => convert(at('2026-10-01 10:00', '2026-11-30 10:00')), /21日以内に終わります/);
   assert.throws(() => convert(at('2026-11-26 10:00', '')), /まだ始まっていません/);
   assert.throws(() => convert(at('2026-12-01 10:00', '')), /まだ始まっていません/);
   // 空は公式の表示と同じく制限なし。公式の読み方（'/' 区切り、1 桁の月日）も受け付ける
   assert.ok(convert(at('', '')).regular.length);
-  assert.ok(convert(at('2026/10/1 10:00', '2027/1/31 23:59')).regular.length);
+  assert.ok(convert(at('2026/10/1 10:00', '')).regular.length);
   assert.throws(() => convert(at('2026/12/1', '')), /まだ始まっていません/);
   assert.throws(() => convert(at('10月1日', '')), /始まりを読めません/);
-  assert.throws(() => convert(at('2026-10-01 10:00', '年明けまで')), /終わりを読めません/);
   assert.throws(() => convert(at('2026-02-30 10:00', '')), /始まりを読めません/);
 });
 
-test('期間の告知は、今日から21日先までと重なるときだけ読まない（年をまたぐ期間）', () => {
+test('期間の告知は、期間がすべて終わるまで読まない（何か月先の期間でも、年をまたぐ期間でも）', () => {
   const shop = cases.shops['cd-10150'];
   const noticed = (text) => withPlan(shop, (plan) => { plan.all_annotation_note += `\n・${text}`; });
   const yearEnd = noticed('12月31日～1月3日は年末年始料金となります。');
-  assert.ok(convert(yearEnd, '2026-11-26').regular.length); // 12/17 までとは重ならない
-  assert.throws(() => convert(yearEnd, '2026-12-11'), /21日以内に期間の告知/); // 1/1 まで
-  assert.throws(() => convert(yearEnd, '2027-01-02'), /21日以内に期間の告知/);
+  // アプリでは 12/31 も選べるので、11/26 の時点で読まない
+  assert.throws(() => convert(yearEnd, '2026-11-26'), /終わっていない期間の告知/);
+  assert.throws(() => convert(yearEnd, '2026-12-11'), /終わっていない期間の告知/);
+  assert.throws(() => convert(yearEnd, '2027-01-02'), /終わっていない期間の告知/);
   // 1/3 の夜は 1/4 の朝まで続くので、1/4 はまだ出さない。1/5 には 2026/12/31～2027/1/3 は終わっている
-  assert.throws(() => convert(yearEnd, '2027-01-04'), /21日以内に期間の告知/);
+  assert.throws(() => convert(yearEnd, '2027-01-04'), /終わっていない期間の告知/);
   assert.ok(convert(yearEnd, '2027-01-05').regular.length);
-  // 21 日先（12/10 なら 12/31）の夜の続きの翌朝にかかる期間も出さない
-  assert.throws(() => convert(noticed('2027年1月1日～1月3日は特別料金です。'), '2026-12-10'), /21日以内に期間の告知/);
-  assert.ok(convert(noticed('2027年1月2日～1月3日は特別料金です。'), '2026-12-10').regular.length);
+  assert.throws(() => convert(noticed('2027年1月2日～1月3日は特別料金です。'), '2026-12-10'), /終わっていない期間の告知/);
+  assert.ok(convert(noticed('2026年1月2日～1月3日は特別料金です。'), '2026-11-26').regular.length);
   // 曜日の付いた書き方も期間として読む
   const weekday = noticed('12月31日（木）～1月3日（日）は年末年始料金です。');
-  assert.ok(convert(weekday, '2026-11-26').regular.length);
-  assert.throws(() => convert(weekday, '2026-12-20'), /21日以内に期間の告知/);
+  assert.throws(() => convert(weekday, '2026-11-26'), /終わっていない期間の告知/);
+  assert.ok(convert(weekday, '2027-01-05').regular.length);
   const listed = noticed('12月24日（木）、25日（金）は特別料金です。');
-  assert.ok(convert(listed, '2026-11-26').regular.length);
-  assert.throws(() => convert(listed, '2026-12-05'), /21日以内に期間の告知/);
+  assert.throws(() => convert(listed, '2026-11-26'), /終わっていない期間の告知/);
   // 「、」で並べた最後の日もその 1 日だけ。過ぎれば読む。「以降」が付けば終わりの分からない期間
   assert.ok(convert(listed, '2027-01-10').regular.length);
   assert.throws(() => convert(noticed('12月24日、25日以降は特別料金です。'), '2027-01-10'), /終わりの日を読めません/);
   const slash = noticed('12/24～12/25は特別料金です。');
-  assert.ok(convert(slash, '2026-11-26').regular.length);
-  assert.throws(() => convert(slash, '2026-12-10'), /21日以内に期間の告知/);
+  assert.throws(() => convert(slash, '2026-11-26'), /終わっていない期間の告知/);
+  assert.ok(convert(slash, '2027-01-10').regular.length);
+  // 「12.24」の形の日付と、言葉のない告知（イベント営業・料金が変わります）
+  const dotted = noticed('12.24～12.25はイベント営業のため料金が変わります');
+  assert.throws(() => convert(dotted, '2026-12-10'), /終わっていない期間の告知/);
+  assert.ok(convert(dotted, '2027-01-10').regular.length);
+  assert.throws(() => convert(noticed('12.24(木)～12.25(金)はクリスマス特別営業'), '2026-12-10'), /終わっていない期間の告知/);
   const sameMonth = noticed('12月11日、14日～17日は繁忙期のため特別料金です。');
-  assert.throws(() => convert(sameMonth, '2026-11-26'), /21日以内に期間の告知/);
+  assert.throws(() => convert(sameMonth, '2026-11-26'), /終わっていない期間の告知/);
+  assert.ok(convert(sameMonth, '2026-12-19').regular.length);
   // 終わりの日が読めない告知は出さない側に倒す
   assert.throws(() => convert(noticed('12月1日より料金を改定いたします。')), /終わりの日を読めません/);
   assert.throws(() => convert(noticed('年末年始は特別料金となります。')), /期間を読めません/);
   assert.throws(() => convert(noticed('クリスマスと繁忙日は料金が異なります。')), /期間を読めません/);
+  assert.throws(() => convert(noticed('臨時で料金が変わる日があります。')), /期間を読めません/);
   const later = noticed('2026年12月26日から特別料金です。');
-  assert.ok(convert(later, '2026-11-26').regular.length); // 始まりが 21 日先より後
-  assert.throws(() => convert(later, '2026-12-10'), /終わりの日を読めません/);
+  assert.throws(() => convert(later, '2026-11-26'), /終わりの日を読めません/); // 始まりが先でも出さない
   assert.throws(() => convert(later, '2027-02-01'), /終わりの日を読めません/); // 始まった後も終わりが分からない
   // 告知の言葉がなくても、日付の書かれた行は期間として確かめる
   const dated = noticed('12月31日～1月3日は料金が異なります。');
-  assert.ok(convert(dated, '2026-11-26').regular.length);
-  assert.throws(() => convert(dated, '2026-12-20'), /21日以内に期間の告知/);
+  assert.throws(() => convert(dated, '2026-11-26'), /終わっていない期間の告知/);
   assert.throws(() => convert(noticed('12/31は営業時間が変わります。'), '2026-12-20'), /終わりの日を読めません/);
-  // 期間の告知でない「限定」（学生グループ限定など）は今までどおり
+  // 期間の告知でない「限定」（学生グループ限定など）や、金額・時刻は今までどおり
   assert.ok(convert(noticed('学生グループ限定のフリータイムがあります。')).regular.length);
+  assert.ok(convert(noticed('会員入会金 1,610円、受付 18:00~翌4:30')).regular.length);
+});
+
+test('終わりの側だけが書かれた告知は、その日に終わる期間として読む', () => {
+  const shop = cases.shops['cd-10150'];
+  const noticed = (text) => withPlan(shop, (plan) => { plan.all_annotation_note += `\n・${text}`; });
+  // 12/15 の時点では 1/11 まで特別料金の期間に入っている（12/20 などに通常料金を出さない）
+  for (const text of ['1月11日まで年末年始特別料金となります。', '年末年始（～1月11日）は特別料金です。',
+    '1月11日（日）までは特別料金です。', '～1/11は特別料金']) {
+    const shopWithNotice = noticed(text);
+    assert.throws(() => convert(shopWithNotice, '2026-12-15'), /終わっていない期間の告知/, text);
+    assert.throws(() => convert(shopWithNotice, '2027-01-12'), /終わっていない期間の告知/, text); // 1/11 の夜の続き
+    assert.ok(convert(shopWithNotice, '2027-01-13').regular.length, text);
+  }
 });
 
 test('税込と書かれていない、または税抜の料金は読まない', () => {
