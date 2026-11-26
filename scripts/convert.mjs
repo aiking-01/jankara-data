@@ -10,13 +10,16 @@ import { convertCotedazurShops } from './web/cotedazur.js';
 import { convertJoysound } from './web/joysound.js';
 import { convertUtahiroShops, todayJst } from './web/utahiro.js';
 import { convertDay, convertJoyjoyShops } from './web/joyjoy.js';
+import { convertJoysoundShop, jstDate } from './web/joysound.js';
 import { implausiblePrice } from './plausible.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const FIELDS = ['regular', 'solo', 'week', 'flat', 'minStay', 'alerts', 'source_rates'];
+// JOYSOUND の期間告知（年末年始など）を判定する今日（JST）。確かめるときは CONVERT_DATE=YYYY-MM-DD で差し替える
+const JOYSOUND_TODAY = /^\d{4}-\d{2}-\d{2}$/.test(process.env.CONVERT_DATE ?? '') ? process.env.CONVERT_DATE : jstDate(Date.now());
 // カラオケ館は料金表が画像なので、ocr.yml が読んだ結果から作る。ocr.json には他のチェーンの店も入っている
 const TARGETS = {
-  joysound: ['joysound_prices.json', (shop) => convertJoysound(shop.sections, shop.opening_hours)],
+  joysound: ['joysound_prices.json', (shop) => convertJoysoundShop(shop, { today: JOYSOUND_TODAY })],
   bigecho: ['chain_prices.json', (shop) => convertBigEcho(shop.sections, shop.hours)],
   maneki: ['maneki_prices.json', (shop) => convertManeki(shop.tables)],
   // メガビッグは表の外の告知・リンク・読めなかった表も渡す。変換する日は CONVERT_TODAY（YYYY-MM-DD）で差し替えられる
