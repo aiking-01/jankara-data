@@ -55,7 +55,8 @@ PREFIX = {
     "歌広場": ("uh-", "www.utahiro.com"),
     "メガビッグ": ("mb-", "megakara.jp"),
 }
-CLOCK = {"updated_at", "checked_at", "changed_at"}
+# verified_at はカラオケ館の画像を確かめた日時（料金の中身ではない）
+CLOCK = {"updated_at", "checked_at", "changed_at", "verified_at"}
 JAPANESE_REGION = re.compile(r"^(?:北海道|東京都|大阪府|京都府|.{2,3}県)")
 NO_HTML = re.compile(r"<(?:html|body|title|script|div|h[1-6]|!doctype)\b|(?:502 Bad Gateway|Access Denied|404 Not Found)", re.I)
 PRICE_TEXT = re.compile(r"^(?:[¥￥]?\s*)?(\d{1,3}(?:,\d{3})*|\d+)(?:\s*円)?$")
@@ -72,6 +73,8 @@ WARNINGS: list[str] = []
 ISSUE_SOURCES: list[str] = []
 # 修復で外した店（元データの名前 → ID）。店数の減少の判定では、外す前の店数で比べる
 REPAIRED: dict[str, set] = {}
+# 今の店舗一覧の ID。閉店して一覧から消えた店は、料金の元データの店数の減少に数えない
+CURRENT_SHOPS: set[str] = set()
 # 修復で外した店の、最後に検査を通った記録。翌日その店が戻ってきたら、新しい店として素通しせずにこれと比べる
 QUARANTINE_FILE = "source/quarantine.json"
 QUARANTINE: dict[str, dict] = {}
@@ -770,14 +773,20 @@ def _validate_doc(name, current, previous, issues, *, allow_empty_old=False, bui
     # 配る側（build）は、変換が読まない店や長く確かめていない店を外すので空になってよい
     fresh = _records(current, name, allow_empty=built or name not in ("chains", "prices"))
     old = _records(previous, name, allow_empty=built or allow_empty_old or name in ("megabig_prices", "megabig", "cotedazur_prices", "cotedazur", "utahiro_prices", "utahiro"))
-    old_count, fresh_count = len(old), len(fresh) + len(REPAIRED.get(name, ()))
     held = QUARANTINE.get(name, {}) if not built else {}
-    # 取得の失敗は元データの店数で止める。配る側の減少は変換が読まなくなった店なので、修復では止めない
-    if REPAIR and built:
-        pass
+    # 修復で外した店（この回の REPAIRED と、前の段階で隔離した店）と閉店した店は、減少に数えない
+    left_out = (REPAIRED.get(name, set()) | set(held)) & set(old)
+    counted_old = {key for key in old if not (CURRENT_SHOPS and name not in ("chains", "prices", "ocr")
+                                              and key not in CURRENT_SHOPS)}
+    old_count, fresh_count = len(counted_old), len(set(fresh) | (left_out & counted_old))
+    # 取得の失敗は元データの店数で止める。配る側（build）の増減は、変換が読む店や、長く確かめていない店を
+    # 外した結果なので止めない（0 店になって配らなかったチェーンもある）。異常な金額は店ごとの検査で止める
+    if built:
+        if old_count and (fresh_count < old_count * 0.5 or fresh_count > old_count * 1.25 + 10):
+            WARNINGS.append(f"{name}: 配る店の数が大きく変わりました ({old_count} → {fresh_count})")
     elif not allow_empty_old and fresh_count < old_count * (0.95 if name != "ocr" else 0.90) and old_count - fresh_count > 2:
         issues.append(f"{name}: 店舗数が異常に減少 ({old_count} → {fresh_count})")
-    if old_count and not allow_empty_old and fresh_count > old_count * 1.25 + 10:
+    if not built and old_count and not allow_empty_old and fresh_count > old_count * 1.25 + 10:
         issues.append(f"{name}: 店舗数が異常に増加 ({old_count} → {fresh_count})")
     changed = [key for key, value in fresh.items()
                if _meaning(value) != _meaning(old.get(key) if key in old else held.get(key))]
@@ -785,7 +794,7 @@ def _validate_doc(name, current, previous, issues, *, allow_empty_old=False, bui
         # 年末の料金や月ごとの PDF の差し替えで全店が変わることがある。修復では店ごとの検査に任せる。
         # 比べる相手は最後に公開できたデータなので、止め続けると差は広がる一方になる
         message = f"{name}: 変更店舗が全体の35%を超えています ({len(changed)}/{old_count})"
-        if REPAIR:
+        if REPAIR or built:
             WARNINGS.append(message)
         else:
             issues.append(message)
@@ -793,7 +802,7 @@ def _validate_doc(name, current, previous, issues, *, allow_empty_old=False, bui
         before = Counter(item.get("chain") for item in old.values())
         after = Counter(item.get("chain") for item in fresh.values())
         for group in PREFIX:
-            if before[group] and after[group] < before[group] * 0.93:
+            if before[group] and after[group] < before[group] * 0.93 and before[group] - after[group] >= 3:
                 issues.append(f"{name}: {group} の店舗数が7%以上減少 ({before[group]} → {after[group]})")
             if before[group] and after[group] > before[group] * 1.22 + 5:
                 issues.append(f"{name}: {group} の店舗数が異常増加")
@@ -864,6 +873,7 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
     issues, summary = [], []
     ISSUE_SOURCES.clear()
     WARNINGS.clear()
+    CURRENT_SHOPS.clear()
     raw = {}
     for name, file in RAW.items():
         if name in OPTIONAL_RAW and not (ROOT / file).exists():
@@ -876,6 +886,9 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
                     else _json_bytes(_old_bytes(reference, file), f"{reference}:{file}"))
         start = len(issues)
         raw[name], changes = _validate_doc(name, current, previous, issues, allow_empty_old=missing_base)
+        if name == "chains":
+            CURRENT_SHOPS.clear()
+            CURRENT_SHOPS.update(raw[name])
         _tag(issues, start, name)
         summary.append(f"{name}: {len(raw[name])} 件 (変更 {changes} 件)")
     known = raw["chains"]
@@ -920,7 +933,8 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
                     issues.append("round1: 以前の配信データが突然消えています")
                 continue
             current = _json_bytes((ROOT / file).read_bytes(), file)
-            missing_base = name in ("joyjoy", "joysound", "cotedazur", "banban", "round1", "megabig", "utahiro") and _missing_at_reference(reference, old_file)
+            # 配れる店が 0 の回は publish.py が dist の xz を消すので、どのチェーンでも比較元がないことがある
+            missing_base = name not in ("chains", "jankara") and _missing_at_reference(reference, old_file)
             if missing_base:
                 previous = {"schema_version": 1, "updated_at": 0, "shops": {}}
             else:
@@ -947,6 +961,7 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
         # Removing a source or unexpectedly losing a major part of the published
         # dataset must be stopped, even if the raw shop count stayed constant.
     _tag(issues, len(issues), None)
+    CURRENT_SHOPS.clear()  # この検査の中だけで使う
     return issues, summary
 
 

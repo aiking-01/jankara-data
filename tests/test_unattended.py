@@ -188,6 +188,33 @@ class QuarantineTests(unittest.TestCase):
         v._validate_doc("banban_prices", {"shops": {}}, {"shops": {"bb-1": {}}}, issues)
         self.assertFalse(any("データが空" in issue for issue in issues))
 
+    def test_published_side_may_grow_or_shrink_without_stopping(self):
+        # 変換を直して読める店が増えた（カラオケ館 82 → 121）、期間の告知で 0 店になった（JOYSOUND）
+        for repair in (False, True):
+            v.REPAIR = repair
+            issues = []
+            v._validate_doc("kan", {"shops": {f"kan-{i}": {} for i in range(121)}},
+                            {"shops": {f"kan-{i}": {} for i in range(82)}}, issues, built=True)
+            v._validate_doc("joysound", {"shops": {}}, {"shops": {f"js-{i}": {} for i in range(61)}}, issues, built=True)
+            # 店ごとの中身の検査（空の料金など）は別。店数と変更の割合では止めない
+            self.assertFalse([issue for issue in issues if "店舗数" in issue or "35%" in issue], issues)
+
+    def test_shops_left_out_in_the_sources_stage_do_not_count_as_a_drop_later(self):
+        # full の段階は別のプロセスなので、sources の段階で隔離した店を数に戻す
+        v.QUARANTINE["joyjoy_prices"] = {f"jj-{i}": {} for i in range(10)}
+        issues = []
+        v._validate_doc("joyjoy_prices", {"shops": {f"jj-{i}": {} for i in range(10, 100)}},
+                        {"shops": {f"jj-{i}": {} for i in range(100)}}, issues)
+        self.assertFalse(any("店舗数" in issue for issue in issues), issues)
+
+    def test_closed_shops_do_not_count_as_a_drop(self):
+        self.addCleanup(v.CURRENT_SHOPS.clear)
+        v.CURRENT_SHOPS.update(f"jj-{i}" for i in range(90))
+        issues = []
+        v._validate_doc("joyjoy_prices", {"shops": {f"jj-{i}": {} for i in range(90)}},
+                        {"shops": {f"jj-{i}": {} for i in range(100)}}, issues)
+        self.assertFalse(any("店舗数" in issue for issue in issues), issues)
+
     def test_quarantine_releases_shops_that_passed_and_keeps_the_rest(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

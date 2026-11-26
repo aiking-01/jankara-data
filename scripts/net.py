@@ -47,7 +47,7 @@ def check_deadline() -> None:
         raise OutOfTime("締め切りを過ぎたので取得を打ち切ります")
 
 
-def complete(response: requests.Response, *, html: bool = False, pdf: bool = False) -> bool:
+def complete(response: requests.Response, *, html: bool = False, pdf: bool = False, json: bool = False) -> bool:
     """本文が最後まで届いたか。200 以外は確かめない（呼び出し側が状態で判断する）。"""
     if response.status_code != 200:
         return True
@@ -62,6 +62,8 @@ def complete(response: requests.Response, *, html: bool = False, pdf: bool = Fal
     if html and b"</html>" not in body[-4096:].lower():
         return False
     if pdf and b"%%EOF" not in body[-2048:]:
+        return False
+    if json and not body.rstrip().endswith((b"}", b"]")):
         return False
     return True
 
@@ -106,7 +108,7 @@ class Fetcher:
             self.failures = 0
             self.bytes += len(response.content)
 
-    def get(self, url: str, *, html: bool = False, pdf: bool = False, headers: dict | None = None,
+    def get(self, url: str, *, html: bool = False, pdf: bool = False, json: bool = False, headers: dict | None = None,
             allow_redirects: bool = True) -> requests.Response:
         """GET して応答を返す。通信の失敗が続けば最後の例外を投げる。HTTP の状態は確かめない。"""
         last: Exception | None = None
@@ -115,7 +117,7 @@ class Fetcher:
             session = self.session()
             try:
                 response = session.get(url, timeout=self.timeout, headers=headers, allow_redirects=allow_redirects)
-                if not complete(response, html=html, pdf=pdf):
+                if not complete(response, html=html, pdf=pdf, json=json):
                     raise Incomplete(f"本文が途中までしか届いていません ({len(response.content)} バイト)")
                 self._succeeded(response)
                 return response

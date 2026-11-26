@@ -58,4 +58,6 @@ jobs:
       - name: Validate source and published data against main
         run: |
           git fetch origin main
-          python scripts/validate_data.py --stage full --baseline origin/main
+          # 毎朝の公開と同じ修復の基準で確かめる（この CI の中で外した店はどこにもコミットしない）。
+          # 修復なしだと、変換を直して配る店が増減しただけで赤くなり、人が判断する手順になる
+          python scripts/validate_data.py --stage full --baseline origin/main --repair

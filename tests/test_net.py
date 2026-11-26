@@ -76,6 +76,8 @@ class FetcherTests(unittest.TestCase):
         # 圧縮された応答は展開後の長さが違うので比べない
         self.assertTrue(net.complete(response(b"abc", headers={"Content-Length": "2", "Content-Encoding": "gzip"})))
         self.assertFalse(net.complete(response(b"%PDF-1.4 ..."), pdf=True))
+        self.assertFalse(net.complete(response(b'{"shops": [1, 2'), json=True))
+        self.assertTrue(net.complete(response(b'{"shops": [1, 2]} \n'), json=True))
 
     def test_proxy_authentication_failure_is_not_retried(self):
         fetcher, sessions = self.fetcher([requests.exceptions.ProxyError("407 Proxy Authentication Required")])
