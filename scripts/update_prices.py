@@ -34,6 +34,11 @@ MIN_PRICE_RATIO = 0.90
 # この回数の全巡回で連続して消えていたら閉店扱いにする
 CLOSED_AFTER_MISSES = 3
 RETRIES = 3
+# 429 が返ったら待ってから同じ店を読み直す（プロキシは接続ごとに出口が変わる）。
+# 待つ時間は巡回全体で合わせてこの秒数まで。超えたら今までどおり保存せずに打ち切る
+RATE_LIMIT_BUDGET = 8 * 60
+RATE_LIMIT_WAIT = 60
+rate_limit_waited = 0
 ALERT_WORDS = re.compile("特別料金|年末年始|お盆|GW|ゴールデンウィーク|繁忙|特定日")
 # 料金比較に関わる項目。ここが変わったら「料金変更」とみなす
 PRICE_KEYS = ("regular", "solo")
@@ -210,6 +215,13 @@ def parse_shop(number: int, html: str) -> dict:
     }
 
 
+def retry_after(response) -> int:
+    """Retry-After（秒）があればそれに従う。なければ 60 秒。長すぎる指定は 5 分で切る"""
+    value = response.headers.get("Retry-After", "") if getattr(response, "headers", None) else ""
+    seconds = int(value) if value.isdigit() else RATE_LIMIT_WAIT
+    return max(1, min(seconds, 300))
+
+
 def fetch(session: requests.Session, number: int, cache_dir: Path | None,
           timeout: int = 30, retries: int = RETRIES) -> str | None:
     """店舗の HTML を返す。店舗が無ければ None、通信失敗なら例外。"""
@@ -221,7 +233,9 @@ def fetch(session: requests.Session, number: int, cache_dir: Path | None,
         return None
 
     url = BASE_URL.format(number)
-    for attempt in range(retries):
+    global rate_limit_waited
+    attempt = 0
+    while attempt < retries:
         try:
             # 休止番号は 302 で店舗検索へ飛ぶので、リダイレクトは追わない
             response = session.get(url, timeout=timeout, allow_redirects=False)
@@ -230,12 +244,19 @@ def fetch(session: requests.Session, number: int, cache_dir: Path | None,
                 raise
         else:
             if response.status_code == 429:
-                raise RateLimited(url)
+                wait = retry_after(response)
+                if rate_limit_waited + wait > RATE_LIMIT_BUDGET:
+                    raise RateLimited(url)
+                rate_limit_waited += wait
+                print(f"  429 のため {wait} 秒待ってから読み直します", flush=True)
+                time.sleep(wait)
+                continue
             if response.status_code < 500:
                 break
             if attempt == retries - 1:
                 response.raise_for_status()
         time.sleep(5 * (attempt + 1))
+        attempt += 1
 
     if response.status_code in (301, 302, 303, 307, 308, 404, 410):
         if missing:

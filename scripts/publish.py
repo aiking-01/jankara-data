@@ -14,6 +14,8 @@ import sys
 import time
 from pathlib import Path
 
+import seen as seen_state
+
 ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / "dist"
 MANIFEST_VERSION = 2
@@ -31,8 +33,15 @@ SOURCES = {
     "cotedazur": ROOT / "build" / "cotedazur.json",
     "joyjoy": ROOT / "build" / "joyjoy.json",
 }
-# 前回よりこの割合を下回ったら、取得か変換の異常とみなして前回のファイルを残す
+# 前回よりこの割合を下回ったら、取得か変換の異常とみなして前回のファイルを残す。
+# push_data.sh が元データの店数を検査した後（PUBLISH_VALIDATED=1）は使わない。変換が読まなくなった店で
+# 減ったときに前回のファイルを残すと、期間限定の料金などで実際と違う金額を出し続けるため
 MIN_RATIO = 0.9
+# この日数より長く公式の料金表を確かめられていない店は配らない。取得が止まっても古い金額を出し続けない
+STALE_DAYS = 14
+# ジャンカラの配信ファイルは店の一覧も兼ねる。外すと店ごと消え、料金だけ外すと「この時間は料金なし」と出て
+# 閉まっているように読めるので、アプリの表示を決めるまでは外さない（確認日時だけ進める）
+KEEP_WHEN_STALE = {"jankara"}
 # この回の巡回で確かめた店とみなす幅。確認できなかった店にだけ checked_at を残す
 # 取得スクリプトが 20 時間以内の店を飛ばすので、それより長くする
 RUN_SECONDS = 21 * 3600
@@ -71,10 +80,32 @@ def encode(document: dict) -> bytes:
                          check=lzma.CHECK_CRC32, filters=XZ_FILTERS)
 
 
-def publish_file(name: str, document: dict, old: dict | None, dist: Path = DIST, *, confirmed_at: int = 0) -> tuple[dict, bool]:
+def without_stale(name: str, document: dict, state: dict, now: int) -> tuple[dict, int]:
+    """長く確かめられていない店を外した文書と、残った店を最後に確かめた日時を返す。"""
+    source = seen_state.TRACKED.get(name)
+    if source is None:
+        return document, 0
+    shops = document["shops"]
+    items = shops.items() if isinstance(shops, dict) else ((str(item.get("id")), item) for item in shops)
+    fresh, dropped, latest = {}, 0, 0
+    for key, item in items:
+        seen = seen_state.last_seen(state, source, key, item)
+        if now - seen > STALE_DAYS * 86400 and name not in KEEP_WHEN_STALE:
+            dropped += 1
+            continue
+        fresh[key] = item
+        latest = max(latest, seen)
+    if dropped:
+        print(f"::warning::{name}: {STALE_DAYS} 日以上確かめられていない {dropped} 店の金額を配りません", flush=True)
+    kept = fresh if isinstance(shops, dict) else [item for item in shops if str(item.get("id")) in fresh]
+    return {**document, "shops": kept}, latest
+
+
+def publish_file(name: str, document: dict, old: dict | None, dist: Path = DIST, *, confirmed_at: int = 0,
+                 trust_count: bool = False) -> tuple[dict, bool]:
     """新しい manifest の項目と、公開できたかどうかを返す。"""
     count = len(document["shops"])
-    if old and count < old["count"] * MIN_RATIO:
+    if old and not trust_count and count < old["count"] * MIN_RATIO:
         print(f"::error::{name}: 店の数が異常です ({old['count']} -> {count})。前回のファイルを残します", flush=True)
         return old, False
     compacted = compact(document)
@@ -101,6 +132,8 @@ def main() -> int:
         print("::error::REFRESH_CONFIRMED_DATA contains unsupported source", flush=True)
         return 1
     confirmed_at = int(time.time())
+    trust_count = os.environ.get("PUBLISH_VALIDATED") == "1"
+    state = seen_state.load()
     DIST.mkdir(exist_ok=True)
     path = DIST / "manifest.json"
     old = json.loads(path.read_text(encoding="utf-8"))["files"] if path.exists() else {}
@@ -123,8 +156,11 @@ def main() -> int:
         if name == "round1" and not source.exists() and name not in old:
             continue
         document = json.loads(source.read_text(encoding="utf-8"))
+        document, latest_seen = without_stale(name, document, state, confirmed_at)
+        # 確認日時は、料金が変わらなくても最後に公式の表を確かめた日時まで進める（アプリが古さの表示に使う）
         files[name], ok = publish_file(name, document, old.get(name),
-                                       confirmed_at=confirmed_at if name in confirmed else 0)
+                                       confirmed_at=max(latest_seen, confirmed_at if name in confirmed else 0),
+                                       trust_count=trust_count)
         published = published and ok
     manifest = {"schema_version": MANIFEST_VERSION, "files": files}
     path.write_text(json.dumps(manifest, separators=(",", ":"), sort_keys=True), encoding="utf-8", newline="")

@@ -129,6 +129,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # 確かめた日時を先に移す。select_changes.py が日時だけの変更を戻すと、確かめたことが分からなくなる
+          python scripts/seen.py mark
           python scripts/select_changes.py
           bash scripts/push_data.sh "data: refresh" chains.json source
 
@@ -148,16 +150,11 @@ jobs:
         run: |
           set -euo pipefail
           failed=0
-          for outcome in "${{ steps.chains.outcome }}" "${{ steps.megabig.outcome }}" \
-                         "${{ steps.jankara.outcome }}" "${{ steps.bigecho.outcome }}" \
-                         "${{ steps.maneki.outcome }}" \
-                         "${{ steps.publish.outcome }}" "${{ steps.freshness.outcome }}"; do
+          # 一部の店やチェーンの取得失敗は、公開の検査がその店かチェーンだけを外して吸収する。
+          # 長く取れないチェーンは publish.py が 14 日で金額を配るのをやめるので、人の対応は要らない。
+          # 通知するのは、公開そのものか配信の確認が失敗したときだけ
+          for outcome in "${{ steps.publish.outcome }}" "${{ steps.freshness.outcome }}"; do
             if [[ "$outcome" != "success" ]]; then failed=1; fi
-          done
-          # 追加チェーンのPRがマージ済みなら、その取得失敗も通知対象へ含める。
-          for outcome in "${{ steps.joyjoy.outcome }}" "${{ steps.joysound.outcome }}" \
-                         "${{ steps.cotedazur.outcome }}"; do
-            if [[ -n "$outcome" && "$outcome" != "success" ]]; then failed=1; fi
           done
           title='[Data CI] Refresh requires attention'
           current="$(gh issue list --state open --limit 100 --json number,title \
@@ -176,7 +173,7 @@ jobs:
           fi
 
       - name: Fail run when a step failed
-        if: steps.chains.outcome == 'failure' || steps.megabig.outcome == 'failure' || steps.jankara.outcome == 'failure' || steps.bigecho.outcome == 'failure' || steps.maneki.outcome == 'failure' || steps.joyjoy.outcome == 'failure' || steps.joysound.outcome == 'failure' || steps.cotedazur.outcome == 'failure' || steps.publish.outcome == 'failure' || steps.freshness.outcome == 'failure' || steps.notification.outcome == 'failure'
+        if: steps.publish.outcome == 'failure' || steps.freshness.outcome == 'failure' || steps.notification.outcome == 'failure'
         run: |
-          echo "::error::Refresh/manifest validation or incident notification failed. Published data remains protected."
+          echo "::error::Publishing or manifest validation failed. Published data remains protected."
           exit 1

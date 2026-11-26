@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { convertJoysound } from '../scripts/web/joysound.js';
 
-const doc = JSON.parse(readFileSync(new URL('../source/joysound_prices.json', import.meta.url), 'utf8'));
+const doc = JSON.parse(readFileSync(new URL('./fixtures/joysound_prices.json', import.meta.url), 'utf8'));
 const example = Object.values(doc.shops)
   .flatMap((shop) => shop.sections)
   .find((section) => section.rows.some((row) => /30分.*LAST/i.test(row.label)));
@@ -26,7 +26,7 @@ test('営業時間が未確認・曜日別・24時間ならLASTを推測して�
   }
 });
 
-test('元データ全61店を引き続き変換し、既存の日時料金を保持', () => {
+test('見本の店を引き続き変換し、既存の日時料金を保持', () => {
   for (const [id, shop] of Object.entries(doc.shops)) {
     const converted = convertJoysound(shop.sections, shop.opening_hours);
     assert.ok(converted.regular?.some((table) => table.plans.length), id);

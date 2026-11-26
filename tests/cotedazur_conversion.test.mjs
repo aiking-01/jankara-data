@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { convertCotedazurShops } from '../scripts/web/cotedazur.js';
 
-const data = JSON.parse(readFileSync(new URL('../source/cotedazur_prices.json', import.meta.url), 'utf8'));
+const data = JSON.parse(readFileSync(new URL('./fixtures/cotedazur_prices.json', import.meta.url), 'utf8'));
 const [id, first] = Object.entries(data.shops)[0];
 
 test('1店舗だけ公式料金表の型が変わっても、正常店舗は変換する', () => {
@@ -27,7 +27,7 @@ test('公開料金が大量欠落するならfail-closedで配信を停止する
   assert.throws(() => convertCotedazurShops({}), /safety threshold/);
 });
 
-test('公式JSONの全初期レコードが変換できる', () => {
+test('公式JSONの見本の店がすべて変換できる', () => {
   const result = convertCotedazurShops(data.shops);
   assert.equal(result.accepted, Object.keys(data.shops).length);
   assert.deepEqual(result.rejected, []);

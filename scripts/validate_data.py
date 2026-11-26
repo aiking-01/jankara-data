@@ -60,6 +60,15 @@ MINIMUM_PRICE_TEXT = re.compile(r"^[¥￥]\s*(\d[\d,]*)~$")
 COTE_PRICE_FIELD = re.compile(r"(?:_30|_tax|_normal|_student|_ordinary)$|^ftfd_")
 COTE_PRICE_GROUPS = ("noon_weekday", "noon_weekend", "night_weekday", "night_weekend")
 MAX_ISSUES = 40
+# 公開前の修復（--repair）。人の確認を待たずに、異常のあった店かチェーンだけを止めて残りを公開する。
+REPAIR = False
+WARNINGS: list[str] = []
+# issues と同じ順に、どの元データの異常か（RAW の名前）を持つ
+ISSUE_SOURCES: list[str] = []
+SOURCE_OF_BUILD = {"chains": "chains", "jankara": "prices", "bigecho": "chain_prices", "maneki": "maneki_prices",
+                   "megabig": "megabig_prices", "kan": "ocr", "joyjoy": "joyjoy_prices",
+                   "joysound": "joysound_prices", "cotedazur": "cotedazur_prices", "banban": "banban_prices",
+                   "round1": None}
 
 
 class DataRejected(ValueError):
@@ -658,17 +667,27 @@ def _joyjoy(item, old, key, issues, *, require_checked_at=False):
         _price_delta(_joyjoy_values(old), values, key, issues)
 
 
-def _validate_doc(name, current, previous, issues, *, allow_empty_old=False):
-    fresh = _records(current, name)
-    old = _records(previous, name, allow_empty=allow_empty_old or name in ("megabig_prices", "megabig", "cotedazur_prices", "cotedazur"))
+def _validate_doc(name, current, previous, issues, *, allow_empty_old=False, built=False):
+    # 配る側（build）は、変換が読まない店や長く確かめていない店を外すので空になってよい
+    fresh = _records(current, name, allow_empty=built)
+    old = _records(previous, name, allow_empty=built or allow_empty_old or name in ("megabig_prices", "megabig", "cotedazur_prices", "cotedazur"))
     old_count, fresh_count = len(old), len(fresh)
-    if not allow_empty_old and fresh_count < old_count * (0.95 if name != "ocr" else 0.90):
+    # 取得の失敗は元データの店数で止める。配る側の減少は変換が読まなくなった店なので、修復では止めない
+    if REPAIR and built:
+        pass
+    elif not allow_empty_old and fresh_count < old_count * (0.95 if name != "ocr" else 0.90):
         issues.append(f"{name}: 店舗数が異常に減少 ({old_count} → {fresh_count})")
     if old_count and not allow_empty_old and fresh_count > old_count * 1.25 + 10:
         issues.append(f"{name}: 店舗数が異常に増加 ({old_count} → {fresh_count})")
     changed = [key for key, value in fresh.items() if _meaning(value) != _meaning(old.get(key))]
     if old_count > 50 and len(changed) > max(20, old_count * 0.35):
-        issues.append(f"{name}: 変更店舗が全体の35%を超えています ({len(changed)}/{old_count})")
+        # 年末の料金や月ごとの PDF の差し替えで全店が変わることがある。修復では店ごとの検査に任せる。
+        # 比べる相手は最後に公開できたデータなので、止め続けると差は広がる一方になる
+        message = f"{name}: 変更店舗が全体の35%を超えています ({len(changed)}/{old_count})"
+        if REPAIR:
+            WARNINGS.append(message)
+        else:
+            issues.append(message)
     if name == "chains":
         before = Counter(item.get("chain") for item in old.values())
         after = Counter(item.get("chain") for item in fresh.values())
@@ -729,17 +748,28 @@ def _validate_doc(name, current, previous, issues, *, allow_empty_old=False):
     return fresh, len(changed)
 
 
+def _tag(issues, start, source):
+    """issues[start:] がどの元データの異常かを ISSUE_SOURCES に記録する。記録のない異常は None"""
+    ISSUE_SOURCES.extend([None] * (start - len(ISSUE_SOURCES)))
+    ISSUE_SOURCES.extend([source] * (len(issues) - start))
+
+
 def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
     issues, summary = [], []
+    ISSUE_SOURCES.clear()
+    WARNINGS.clear()
     raw = {}
     for name, file in RAW.items():
         current = _json_bytes((ROOT / file).read_bytes(), file)
         missing_base = name in ("joyjoy_prices", "joysound_prices", "cotedazur_prices", "banban_prices", "megabig_prices") and _missing_at_reference(reference, file)
         previous = ({"schema_version": 1, "updated_at": 0, "shops": {}} if missing_base
                     else _json_bytes(_old_bytes(reference, file), f"{reference}:{file}"))
+        start = len(issues)
         raw[name], changes = _validate_doc(name, current, previous, issues, allow_empty_old=missing_base)
+        _tag(issues, start, name)
         summary.append(f"{name}: {len(raw[name])} 件 (変更 {changes} 件)")
     known = raw["chains"]
+    start = len(issues)
     for kind, group in (("chain_prices", "ビッグエコー"), ("maneki_prices", "まねきねこ"),
                          ("megabig_prices", "メガビッグ"), ("joysound_prices", "JOYSOUND"),
                          ("cotedazur_prices", "コート・ダジュール"), ("banban_prices", "BanBan")):
@@ -750,14 +780,19 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
                 issues.append(f"{kind}/{key}: 店舗一覧とチェーンが矛盾")
             elif key not in known and key not in _records(_json_bytes(_old_bytes(reference, RAW[kind]), RAW[kind]), kind):
                 issues.append(f"{kind}/{key}: 店舗一覧にない新規料金レコード")
+        _tag(issues, start, kind)
+        start = len(issues)
     for key, row in raw["ocr"].items():
         if key in known and known[key].get("chain") != row.get("chain"):
             issues.append(f"ocr/{key}: 店舗一覧とチェーンが矛盾")
+    _tag(issues, start, "ocr")
+    start = len(issues)
     for key, row in raw["joyjoy_prices"].items():
         if not key.startswith("jj-") or key not in known or known[key].get("chain") != "JOYJOY":
             issues.append(f"joyjoy_prices/{key}: 店舗一覧にないJOYJOY店舗")
         elif known[key].get("url") != row.get("page"):
             issues.append(f"joyjoy_prices/{key}: 料金表URLが店舗一覧と一致しません")
+    _tag(issues, start, "joyjoy_prices")
     if stage == "full":
         for name, file in BUILT.items():
             if name in ("chains", "jankara"):
@@ -777,7 +812,8 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
                                            f"{reference}:{old_file}")
                 except lzma.LZMAError as exc:
                     raise DataRejected(f"{name}: 前回の公開 XZ が読み取れません") from exc
-            fresh, changes = _validate_doc(name, current, previous, issues, allow_empty_old=missing_base)
+            start = len(issues)
+            fresh, changes = _validate_doc(name, current, previous, issues, allow_empty_old=missing_base, built=True)
             chain = {"bigecho": "ビッグエコー", "maneki": "まねきねこ", "kan": "カラオケ館", "megabig": "メガビッグ",
                      "joyjoy": "JOYJOY", "joysound": "JOYSOUND", "cotedazur": "コート・ダジュール", "banban": "BanBan", "round1": "ROUND1"}[name]
             for key, item in fresh.items():
@@ -788,24 +824,116 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
                     expected = raw["joysound_prices"].get(key, {}).get("sections")
                     if item.get("source_rates") != expected:
                         issues.append(f"build/{name}/{key}: 配布元の全料金行が一致しません")
+            _tag(issues, start, SOURCE_OF_BUILD.get(name))
             summary.append(f"build/{name}: {len(fresh)} 件 (変更 {changes} 件)")
         # Removing a source or unexpectedly losing a major part of the published
         # dataset must be stopped, even if the raw shop count stayed constant.
+    _tag(issues, len(issues), None)
     return issues, summary
+
+
+def _issue_key(issue: str, source: str, records: dict) -> str | None:
+    """「be-0473: …」「build/maneki/mn-x: …」「cd-1.price_plan[0]: …」から店の ID を取り出す。店でなければ None"""
+    head = issue.split(": ", 1)[0]
+    for part in reversed(head.split("/")):
+        key = re.split(r"[.\[]", part, maxsplit=1)[0]
+        if key in records:
+            return key
+    return None
+
+
+def _write_doc(path: Path, doc: dict, original: bytes) -> None:
+    payload = json.dumps(doc, ensure_ascii=False, separators=(",", ":"))
+    if original.endswith(b"\n"):
+        payload += "\n"
+    path.write_text(payload, encoding="utf-8", newline="")
+
+
+def repair(reference: str, issues: list[str]) -> list[str]:
+    """異常のあった店を元データから外し、店に結び付かない異常はその元データを比較元に戻す。
+
+    店を外すと次の回はその店に比べる相手がないので、本当に変わった表なら翌日に受け入れられる（止まり続けない）。
+    元データを戻したチェーンは確認日時が進まないので、publish.py が 14 日後に金額を配るのをやめる。
+    """
+    import seen as seen_state  # scripts/ にある。修復のときだけ使う
+
+    state = seen_state.load()
+    baseline_seen = {}
+    shown = subprocess.run(["git", "show", f"{reference}:source/seen.json"], cwd=ROOT, capture_output=True)
+    if not shown.returncode:
+        try:
+            baseline_seen = json.loads(shown.stdout).get("files", {})
+        except ValueError:
+            baseline_seen = {}
+    drops: dict[str, set] = {}
+    reverts: set[str] = set()
+    actions = []
+    for issue, source in zip(issues, ISSUE_SOURCES):
+        if source is None or source not in RAW:
+            continue
+        file = RAW[source]
+        doc = _json_bytes((ROOT / file).read_bytes(), file)
+        key = _issue_key(issue, source, _records(doc, source, allow_empty=True))
+        if key is None:
+            reverts.add(source)
+        else:
+            drops.setdefault(source, set()).add(key)
+    for source in reverts:
+        file = RAW[source]
+        if _missing_at_reference(reference, file):
+            continue
+        (ROOT / file).write_bytes(_old_bytes(reference, file))
+        if file in state["files"]:
+            state["files"][file] = baseline_seen.get(file, {})
+        actions.append(f"{source}: 異常があるので前回の元データに戻しました")
+    for source, keys in drops.items():
+        if source in reverts:
+            continue
+        path = ROOT / RAW[source]
+        original = path.read_bytes()
+        doc = json.loads(original)
+        if isinstance(doc["shops"], dict):
+            doc["shops"] = {k: v for k, v in doc["shops"].items() if k not in keys}
+        else:
+            doc["shops"] = [item for item in doc["shops"] if str(item.get("id")) not in keys]
+        _write_doc(path, doc, original)
+        block = state["files"].get(RAW[source])
+        if block is not None:
+            for key in keys:
+                block.pop(key, None)
+        actions.append(f"{source}: {len(keys)} 店を今回は配りません ({', '.join(sorted(keys)[:10])})")
+    if state["files"]:
+        seen_state.save(state)
+    return actions
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Validate karaoke source and published data against a trusted git ref")
     parser.add_argument("--baseline", default="HEAD", help="trusted committed git ref, e.g. HEAD or origin/main")
     parser.add_argument("--stage", choices=("sources", "full"), default="full")
+    parser.add_argument("--repair", action="store_true",
+                        help="異常のあった店またはチェーンだけを外して残りを通す（人の確認を待たない運用）")
     args = parser.parse_args()
+    global REPAIR
+    REPAIR = args.repair
     try:
         issues, summary = run_validation(args.baseline, args.stage)
+        # 修復は 2 回まで。修復した後の元データが検査を通らなければ、今までどおり何も公開しない
+        for _ in range(2):
+            if not (args.repair and issues):
+                break
+            for issue in issues[:MAX_ISSUES]:
+                print(f"::warning::{issue}", flush=True)
+            for action in repair(args.baseline, issues):
+                print(f"::warning::{action}", flush=True)
+            issues, summary = run_validation(args.baseline, args.stage)
     except (DataRejected, OSError) as error:
         print(f"::error::データ検査を実行できません: {error}", file=sys.stderr)
         return 1
     for line in summary:
         print(f"[data-check] {line}", flush=True)
+    for warning in WARNINGS:
+        print(f"::warning::{warning}", flush=True)
     if issues:
         print(f"::error::データ検査で {len(issues)} 件の異常を検出。既存データは公開せず維持します。",
               file=sys.stderr, flush=True)

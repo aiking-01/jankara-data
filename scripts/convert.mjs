@@ -27,10 +27,18 @@ function isEmpty(value) {
 mkdirSync(join(ROOT, 'build'), { recursive: true });
 // コート・ダジュールは公式料金JSONを保持し、engine.js 用の通常料金とヒトカラ料金も作る。
 const coteSource = JSON.parse(readFileSync(join(ROOT, 'source', 'cotedazur_prices.json'), 'utf8'));
+// 年末年始のような期間別の料金が出ると、ほとんどの店を読まなくなる。読めた店だけを配り、ほかのチェーンの変換は止めない。
+// 読めない店は「料金表を見る」になるだけで、誤った金額は出ない（取得の失敗は validate_data.py が元データの店数で止める）
 const { shops: coteShops, rejected: coteFailures, accepted, original } =
-  convertCotedazurShops(coteSource.shops);
-for (const { id, reason } of coteFailures) {
-  console.warn(`::warning::cotedazur/${id}: price schema is unsupported: ${reason}`);
+  Object.keys(coteSource.shops).length ? convertCotedazurShops(coteSource.shops, 0)
+    : { shops: {}, rejected: [], accepted: 0, original: 0 };
+const coteReasons = {};
+for (const { reason } of coteFailures) {
+  const kind = reason.replace(/^\d+: /, '');
+  coteReasons[kind] = (coteReasons[kind] ?? 0) + 1;
+}
+for (const [reason, count] of Object.entries(coteReasons)) {
+  console.warn(`::warning::cotedazur: ${count} shops not converted: ${reason}`);
 }
 writeFileSync(join(ROOT, 'build', 'cotedazur.json'), JSON.stringify({ updated_at: coteSource.updated_at, shops: coteShops }));
 console.log(`cotedazur: ${accepted}/${original} shops (${coteFailures.length} unsupported)`);
