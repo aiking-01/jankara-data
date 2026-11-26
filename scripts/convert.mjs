@@ -15,7 +15,9 @@ const FIELDS = ['regular', 'solo', 'week', 'flat', 'minStay', 'alerts', 'source_
 // カラオケ館は料金表が画像なので、ocr.yml が読んだ結果から作る。ocr.json には他のチェーンの店も入っている
 const TARGETS = {
   joysound: ['joysound_prices.json', (shop) => convertJoysound(shop.sections, shop.opening_hours)],
-  bigecho: ['chain_prices.json', (shop) => convertBigEcho(shop.sections, shop.hours)],
+  // 料金が変わる期間の告知は、日本時間の今日から 21 日先までと重なるかで見る（CONVERT_TODAY=YYYY-MM-DD で差し替えられる）
+  bigecho: ['chain_prices.json', (shop) => convertBigEcho(shop.sections, shop.hours,
+    { notice: shop.notice, priceNotes: shop.price_notes, today: process.env.CONVERT_TODAY })],
   maneki: ['maneki_prices.json', (shop) => convertManeki(shop.tables)],
   megabig: ['megabig_prices.json', (shop) => convertMegabig(shop.sections, shop.hours)],
   kan: ['ocr.json', (shop) => (shop.chain === 'カラオケ館' ? convertKanOcr(shop.reads) : { reason: 'other-chain' })],
