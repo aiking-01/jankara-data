@@ -9,16 +9,17 @@ const ids = (result) => Object.keys(result.shops).sort();
 
 test('料金なしの店と、終わりの日付が読めない告知の店は配らない', () => {
   const result = convertJoyjoyShops(data.shops, '2026-11-26');
-  assert.deepEqual(ids(result), ['jj-Plan-Store', 'jj-Sample-Store', 'jj-Year-End-Store']);
+  // jj-Year-End-Store は 12/28～1/4 の告知がまだ終わっていないので配らない
+  assert.deepEqual(ids(result), ['jj-Plan-Store', 'jj-Sample-Store']);
   const kinds = Object.fromEntries(result.rejected.map(({ id, kind }) => [id, kind]));
   assert.equal(kinds['jj-Withdrawn-Store'], '料金なし');
   assert.match(kinds['jj-Open-End-Store'], /期間の告知/);
 });
 
-test('年末年始の告知は、変換する日から 21 日先までと重なる間だけ配らない', () => {
+test('年末年始の告知は、期間が終わるまで（始まりが先でも）配らない', () => {
   const shop = { 'jj-Year-End-Store': data.shops['jj-Year-End-Store'] };
   // 告知は 2026-12-28 ～ 2027-01-04
-  for (const [day, shown] of [['2026-11-26', true], ['2026-12-06', true], ['2026-12-07', false],
+  for (const [day, shown] of [['2026-11-26', false], ['2026-12-06', false], ['2026-12-07', false],
     ['2026-12-31', false], ['2027-01-04', false], ['2027-01-05', true]]) {
     assert.equal(ids(convertJoyjoyShops(shop, day)).length === 1, shown, day);
   }

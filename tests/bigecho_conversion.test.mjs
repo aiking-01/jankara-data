@@ -14,14 +14,15 @@ const noticeBlocks = (text, today) => Boolean(specialPeriod({ notice: text }, da
 
 // ---- 料金が変わる期間の告知 ----
 
-test('利用者は先の日付も選べるので、告知は 90 日先までを見る', () => {
-  assert.equal(WINDOW_DAYS, 90);
+test('利用者は先の日付も選べるので、告知は期間が終わるまで見る（年のない日付は今日に近い回なので 1 年先まで）', () => {
+  assert.equal(WINDOW_DAYS, 366);
 });
 
-test('店舗からのお知らせの料金改定（be-1343）: 始まりが 90 日先までに入ったら出さない', () => {
+test('店舗からのお知らせの料金改定（be-1343）: 告知が出ていれば始まりが先でも出さない', () => {
   assert.equal(convert('be-1343', '2026-11-26').reason, 'special-period');
-  assert.equal(convert('be-1343', '2026-09-02').reason, 'special-period'); // 12/1 は 90 日先
-  const before = convert('be-1343', '2026-09-01');
+  assert.equal(convert('be-1343', '2026-09-01').reason, 'special-period');
+  assert.equal(convert('be-1343', '2025-11-30').reason, 'special-period'); // 12/1 は 366 日先
+  const before = convert('be-1343', '2025-11-29');
   assert.equal(before.reason, undefined);
   assert.ok(plansOf(before, 'regular', '30分').length);
 });
@@ -79,16 +80,15 @@ test('年をまたぐ期間の年を、今日に一番近い回として決め�
   for (const day of ['2026-11-26', '2026-12-28', '2027-01-03', '2027-01-05']) assert.ok(noticeBlocks('11/27～1/5は特別料金となります', day), day);
   assert.equal(noticeBlocks('11/27～1/5は特別料金となります', '2027-01-06'), false);
   for (const day of ['2026-12-05', '2026-12-28', '2027-01-03']) assert.ok(noticeBlocks('12/26～1/4は特別料金となります', day), day);
-  assert.ok(noticeBlocks('12/26～1/4は特別料金となります', '2026-09-27'));
-  assert.equal(noticeBlocks('12/26～1/4は特別料金となります', '2026-09-26'), false);
+  assert.ok(noticeBlocks('12/26～1/4は特別料金となります', '2026-09-26')); // 告知が出ていれば始まりが先でも止める
   assert.equal(noticeBlocks('12/26～1/4は特別料金となります', '2027-01-06'), false);
   assert.ok(noticeBlocks('・11月27日(金)～2027年1月11日(月祝)は特別料金期間となります。', '2027-01-11'));
   assert.equal(noticeBlocks('・11月27日(金)～2027年1月11日(月祝)は特別料金期間となります。', '2027-01-12'), false);
 });
 
 test('「2026/12/01」を月日と取り違えない', () => {
-  assert.ok(noticeBlocks('2026/12/01から料金改定', '2026-09-02'));
-  assert.equal(noticeBlocks('2026/12/01から料金改定', '2026-09-01'), false);
+  assert.ok(noticeBlocks('2026/12/01から料金改定', '2026-09-01'));
+  assert.equal(noticeBlocks('2026/12/01から料金改定', '2025-11-29'), false); // 366 日より先
   assert.equal(noticeBlocks('2026/11/20（金）より、店名を「A店」から「B店」へ変更することとなりました。', '2026-11-26'), false);
 });
 
@@ -105,8 +105,8 @@ test('語を広く読む: 料金が異なる、週末料金に変更、期間限
 
 test('日付と料金の語が別の文にあっても、同じ段落なら読む', () => {
   const text = '【年末年始の営業について】\n12/29(火)～1/3(日)\n上記期間は特別料金となります';
-  assert.ok(noticeBlocks(text, '2026-09-30'));
-  assert.equal(noticeBlocks(text, '2026-09-29'), false);
+  assert.ok(noticeBlocks(text, '2026-09-29'));
+  assert.equal(noticeBlocks(text, '2027-01-05'), false);
   assert.ok(noticeBlocks('年末年始料金\n12/29・30・31', '2026-12-31'));
   assert.equal(noticeBlocks('年末年始料金\n12/29・30・31', '2027-01-01'), false);
 });
@@ -236,10 +236,10 @@ test('「期間：12月1日～1月11日」のようにコロンの直後にあ�
   assert.equal(specialPeriod({ sections: [note] }, dayOf('2026-11-26')), null);
 });
 
-test('21 日より先に告知された期間でも、90 日先までなら今から出さない（先の日付を選べるため）', () => {
+test('21 日より先に告知された期間でも、今から出さない（先の日付を選べるため）', () => {
   assert.ok(noticeBlocks('12/29(火)～1/3(日)は年末年始特別料金での営業となります', '2026-11-26'));
   assert.ok(noticeBlocks('2027年2月1日より料金を改定いたします', '2026-11-26'));
-  assert.equal(noticeBlocks('2027年3月1日より料金を改定いたします', '2026-11-26'), false);
+  assert.ok(noticeBlocks('2027年3月1日より料金を改定いたします', '2026-11-26'));
 });
 
 test('よくある言い回しの告知も読む: +N円、休日・土日祝・祝日・クリスマス料金、新料金、ドット区切りの月日', () => {

@@ -1,10 +1,11 @@
 // JOYJOY は公式に「～」付きの最低価格しかないので、計算用の表（regular）には変換しない。
 // 取得した記録（source/joyjoy_prices.json）から、変換する日に配ってよい店だけを選んでそのまま配る。
 // - 料金なしの記録（ページは取れたが料金表がない・読めない・開店前など）は配らない
-// - 年末年始・特別料金・料金改定などの告知があり、その期間が変換する日から 21 日先までと重なる店は配らない。
-//   終わりの日付が読めない告知がある店も配らない（アプリは配信データを最長 21 日使い、利用者は先の日付も選べるため）
+// - 年末年始・特別料金・料金改定などの告知があり、その期間がまだ終わっていない店は、始まりが先でも配らない
+//   （利用者はアプリで先の日付をいくらでも選べるため）。終わりの日付が読めない告知がある店も配らない
 // - 最低価格がありえない金額の店は配らない（validate_data.py の JOYJOY の検査と同じ範囲）
-export const HORIZON_DAYS = 21;
+// 年のない日付は今日に近い回として読むので、1 年先までを見れば足りる
+export const HORIZON_DAYS = 366;
 const SLOT_YEN = [80, 1000];
 const FREE_YEN = [300, 5000];
 const ISO = /^\d{4}-\d{2}-\d{2}$/;
@@ -25,7 +26,7 @@ function addDays(day, days) {
   return new Date(Date.parse(`${day}T00:00:00Z`) + days * 86400000).toISOString().slice(0, 10);
 }
 
-// 変換する日から 21 日先までに効く告知を返す。終わりの日付が読めない告知は、いつでも効くとみなす
+// 変換する日より後まで効く告知を返す。終わりの日付が読めない告知は、いつでも効くとみなす
 export function activeNotice(notices, today) {
   const last = addDays(today, HORIZON_DAYS);
   for (const notice of notices ?? []) {
@@ -42,7 +43,7 @@ function rejection(record, today) {
   if (!Array.isArray(record.rates) || !record.rates.length) return ['料金なし', record.withdrawn ?? ''];
   if (record.notices !== undefined && !Array.isArray(record.notices)) return ['告知の形式が不正', ''];
   const notice = activeNotice(record.notices, today);
-  if (notice) return ['期間の告知が今日から 21 日先までに効く', String(notice.text ?? '')];
+  if (notice) return ['期間の告知がまだ終わっていない', String(notice.text ?? '')];
   for (const rate of record.rates) {
     const [low, high] = rate?.period === 'freetime' ? FREE_YEN : SLOT_YEN;
     if (!Array.isArray(rate?.windows) || !rate.windows.length) return ['時間帯がない', rate?.period ?? ''];
