@@ -8,18 +8,20 @@ PDF は複数ページのものが多い。料金表のページは文字を座�
 
 robots.txt は PDF の置き場所 /wp-content/uploads/ を巡回の対象外としているが、利用者の判断で全店を確認する。
 負荷を抑えるため 1 秒に 1 件ずつ順に取得し、店のページの更新日時が変わった店の PDF だけを取る。
-更新日時が同じでも、PDF を最後に確かめてから 5 日以上たっていれば（3 日ごとの巡回なら 6 日ごと）、店のページを最後まで
-読み、PDF を If-None-Match で確かめる（同じ URL のまま PDF を差し替えたり、お知らせだけを足したりしても見逃さないため。
+更新日時が同じでも、PDF を最後に確かめてから 8 日以上たっていれば（3 日ごとの巡回なら 3 回に 1 回、9 日ごと）、店のページを
+最後まで読み、PDF を If-None-Match で確かめる（同じ URL のまま PDF を差し替えたり、お知らせだけを足したりしても見逃さないため。
 変わっていなければ 304 で本文は来ない。304 が返らないと分かったら、その回の残りは HEAD で比べる）。
+ふだんの増え方は 1 日あたり約 81 店（726 店 ÷ 9 日）で、店のページの残り約 130KB と、本文のない 304 が 1 件ずつ。
 
 告知を残すようにする前の記録（版が EXTRACT より古い）は変換が読まない。1 回に BACKFILL 店ずつ、最後に確かめたのが
 古い順に PDF を取り直して埋める（全店を一度に取り直さない）。
 
 通信の失敗（タイムアウト、接続エラー、本文の欠け、5xx）の店は前回の記録を残す（確かめた日時は進まないので、
-14 日たてば publish.py が配らなくなる）。ページは取れたのに料金表が読めない店（PDF がない、2 つ以上ある、
-PDF が消えた、壊れている、文字がない）は、その日のうちに料金なしの記録にする。閉店（店のページが 404/410）は
-失敗に数えず、料金なしの記録にする（店の一覧から消えたら記録も消える）。
-CRAWL_DEADLINE を過ぎたら残りの店は取らずに、そこまでの分を保存して正常に終える。
+14 日たてば publish.py が配らなくなる）。ただし、店のページが変わった（PDF の URL か更新日時が変わった）と分かった後に
+PDF を取れなかったときは、前回の金額を残さずに料金なしの記録（pdf-unfetched）にし、確かめた日時は進めずに次の回に取り直す。
+ページは取れたのに料金表が読めない店（PDF がない、2 つ以上ある、PDF が消えた、PDF でない、壊れている、文字がない）は、
+その日のうちに料金なしの記録にする。閉店（店のページが 404/410）は失敗に数えず、料金なしの記録にする
+（店の一覧から消えたら記録も消える）。CRAWL_DEADLINE を過ぎたら残りの店は取らずに、そこまでの分を保存して正常に終える。
 
 使い方:
     python update_maneki_prices.py                  # 3 日に 1 回の割り当てぶんを更新
@@ -28,6 +30,7 @@ CRAWL_DEADLINE を過ぎたら残りの店は取らずに、そこまでの分�
 from __future__ import annotations
 
 import argparse
+import email.utils
 import html as html_lib
 import json
 import os
@@ -58,7 +61,9 @@ SCHEMA_VERSION = 1
 # 取り出しの版。告知と各ページの統計を残すようにしたので 2。web/maneki.js の EXTRACT_VERSION と同じ値にする
 EXTRACT = 2
 BACKFILL = 50
-PDF_RECHECK = 5 * 86400
+# 3 日ごとの巡回の 3 回に 1 回（9 日ごと）。開始時刻のずれがあっても 9 日目に確かめるよう、9 日より少し短くする。
+# publish.py の 14 日の取り下げより短い
+PDF_RECHECK = 8 * 86400
 DELAY = 1.0
 THROTTLED_CODES = (403, 429, 503)
 PDF_THROTTLED = (429, 503)  # PDF の置き場所（S3）は、ない PDF に 403 を返すことがある
@@ -74,6 +79,8 @@ FOOTNOTE_START = "※ご利用は"
 NOISE = ("円", "~", "～")
 # 画像が中心のページ（web/maneki.js の isVisual と同じ条件）
 VISUAL_AREA = 0.15
+# 同じ画像とみなす見た目の指紋の違い（web/maneki.js の LOOK_DISTANCE と同じ値）
+LOOK_DISTANCE = 4
 MODIFIED = re.compile(rb'article:modified_time" content="([^"]+)"')
 PDF_URL = re.compile(r"https://www\.karaokemanekineko\.jp/wp-content/uploads/[^\"'\s<>]+\.pdf")
 NEWS_ITEM = re.compile(r'<li class="storeDetail__info__news__item"[^>]*>(.*?)</li>', re.S)
@@ -81,8 +88,11 @@ NEWS_DATE = re.compile(r'<time datetime="(\d{4}-\d{2}-\d{2})"')
 NEWS_BODY = re.compile(r'class="storeDetail__info__news__body"[^>]*>(.*?)</p>', re.S)
 REMARKS = re.compile(r'class="storeDetail__price__remarks"[^>]*>(.*?)</ul>', re.S)
 REMARK = re.compile(r"<li[^>]*>(.*?)</li>", re.S)
-# 特別営業時間の欄（ふだんは空）。中身の作りが分からないので、次の欄までの文をそのまま残す
+# 特別営業時間の欄（ふだんは空）。中身の作りが分からないので、次の欄までの文をそのまま残す。
+# 変換は、この欄に文があれば、書かれた日付がすべて過ぎるまで読まない（kind で見分ける）
 SPECIAL_HOURS = re.compile(r'class="storeDetail__info__specialHours__wrap[^"]*"[^>]*>(.*?)<div class="storeDetail__wrap"', re.S)
+SPECIAL_HOURS_MARK = "storeDetail__info__specialHours"
+SPECIAL_KIND = "special-hours"
 # 料金表の下の注記は全店で同じ文。これ以外の文が載ったときだけ告知として残す
 STANDARD_REMARKS = {
     "朝うた料金は、30分あたりの金額となります。",
@@ -101,6 +111,19 @@ PDF_FIELDS = ("pdf", "etag", "last_modified", "length", "extract", "tables", "no
 
 class Throttled(Exception):
     pass
+
+
+class PdfUnfetched(Exception):
+    """店のページが変わったと分かった後に、PDF を通信の失敗で取れなかった。
+
+    前回の金額は古い PDF のものなので残さない。保存する記録（料金なし、確かめた日時は前回のまま）を持ち、
+    呼び出し側はこの店を失敗として数える（seen.json の tried で次の回に取り直す）。
+    """
+
+    def __init__(self, record: dict, size: int, error: Exception):
+        super().__init__(f"{type(error).__name__}: {error}")
+        self.record = record
+        self.size = size
 
 
 class Page(NamedTuple):
@@ -281,6 +304,37 @@ def extract(pdf: bytes | str | Path) -> dict:
     return {"tables": tables, "notices": notices, "pages": pages}
 
 
+def _look_distance(first: str, second: str) -> int:
+    return bin(int(first, 16) ^ int(second, 16)).count("1")
+
+
+def uploaded_at(last_modified: str | None, now: int) -> int:
+    """PDF の Last-Modified（置き場所に上げた日時）。読めなければ今"""
+    try:
+        value = int(email.utils.parsedate_to_datetime(last_modified).timestamp())
+    except (TypeError, ValueError, IndexError):
+        return now
+    return value if 0 < value <= now else now
+
+
+def with_since(pages: list[dict], old: dict, uploaded: int) -> list[dict]:
+    """画像が中心のページに、その店にその画像が載り始めた日時（since）を付ける。
+
+    前回の PDF に同じ見た目の画像のページがあればその日時を引き継ぎ、なければ PDF を上げた日時にする。
+    変換は、前から多くの店に載っている画像だけを全店共通の案内として通す（新しく全店に入れた画像の告知は通さない）。
+    """
+    previous = []
+    if old.get("extract") == EXTRACT:
+        previous = [page for page in old.get("pages") or [] if isinstance(page, dict) and not page.get("table")
+                    and re.fullmatch(r"[0-9a-f]{16}", str(page.get("look"))) and type(page.get("since")) is int]
+    for page in pages:
+        if page.get("table") or not page.get("look") or not visual(page):
+            continue
+        known = [item["since"] for item in previous if _look_distance(item["look"], page["look"]) <= LOOK_DISTANCE]
+        page["since"] = min(known + [uploaded])
+    return pages
+
+
 def tables_of(pdf: bytes | str | Path) -> list[list]:
     """料金表のページの文字をページごとに返す。文字のない PDF は空。"""
     return extract(pdf)["tables"]
@@ -292,7 +346,11 @@ def _clean(markup: str) -> str:
 
 
 def store_notices(markup: str) -> list[dict]:
-    """店のページのお知らせ、特別営業時間の欄、全店共通でない料金の注記。date はお知らせの掲載日（ほかは空）。"""
+    """店のページのお知らせ、特別営業時間の欄、全店共通でない料金の注記。date はお知らせの掲載日（ほかは空）。
+
+    特別営業時間の欄の文には kind: special-hours を付ける。欄はあるのに読めないとき（ページの作りが変わった）は、
+    日付のない文として残し、変換は読まない側に倒す。
+    """
     notices = []
     for item in NEWS_ITEM.findall(markup):
         date = NEWS_DATE.search(item)
@@ -302,8 +360,11 @@ def store_notices(markup: str) -> list[dict]:
             notices.append({"date": date.group(1) if date else "", "text": text[:MAX_TEXT], **({"cut": True} if len(text) > MAX_TEXT else {})})
     special = SPECIAL_HOURS.search(markup)
     text = _clean(special.group(1)) if special else ""
+    if not special and SPECIAL_HOURS_MARK in markup:
+        text = "特別営業時間の欄を読めません"
     if text:
-        notices.append({"date": "", "text": text[:MAX_TEXT], **({"cut": True} if len(text) > MAX_TEXT else {})})
+        notices.append({"date": "", "kind": SPECIAL_KIND, "text": text[:MAX_TEXT],
+                        **({"cut": True} if len(text) > MAX_TEXT else {})})
     remarks = REMARKS.search(markup)
     for item in REMARK.findall(remarks.group(1) if remarks else ""):
         text = _clean(item)
@@ -366,7 +427,12 @@ class PdfReader:
             return "same", None
         time.sleep(DELAY)
         headers = {"If-None-Match": old["etag"]} if old and old.get("etag") else None
-        response = self.fetcher.get(url, pdf=True, headers=headers)
+        # 本文が PDF でない 200（HTML や XML のエラーページ）は、取り直しても PDF にならないので、すぐに PDF でないものとして返す。
+        # PDF なのに末尾の %%EOF がない本文だけを欠けとみなし、新しい接続で読み直す（net.Fetcher の pdf=True）
+        response = self.fetcher.get(url, headers=headers)
+        if response.status_code == 200 and response.content[:4] == b"%PDF" and not net.complete(response, pdf=True):
+            time.sleep(DELAY)
+            response = self.fetcher.get(url, pdf=True, headers=headers)
         if response.status_code == 304:
             self.unchanged += 1
             return "same", None
@@ -406,6 +472,7 @@ class PdfReader:
 
 def fetch_shop(fetcher: PageFetcher, reader: PdfReader, url: str, old: dict, *, refresh: bool = False) -> tuple[dict, int]:
     """1 店を確かめて、保存する内容と通信量を返す。通信の失敗は例外（呼び出し側で前回の記録を残す）。
+    ページが変わったと分かった後に PDF の取得だけが通信の失敗になったときは PdfUnfetched（料金なしの記録を持つ）。
 
     refresh は古い版の記録を取り直す店。ページを最後まで読み、PDF も本文ごと取り直す。
     """
@@ -414,7 +481,9 @@ def fetch_shop(fetcher: PageFetcher, reader: PdfReader, url: str, old: dict, *, 
     # PDF を最後に確かめた日時。時刻だけの変更として select_changes.py と validate_data.py が無視するよう、入れ子の checked_at に置く
     check = old.get("pdf_check")
     checked = check.get("checked_at", 0) if isinstance(check, dict) else 0
-    full = refresh or not old.get("modified") or (current and now - checked >= PDF_RECHECK)
+    # 前回 PDF を取れなかった店は、ページが変わっていなくても PDF を取り直す
+    full = (refresh or not old.get("modified") or old.get("status") == "pdf-unfetched"
+            or (current and now - checked >= PDF_RECHECK))
     page = fetcher.read_page(url, None if full else old.get("modified"))
     if page.status in GONE:
         # 閉店した店。失敗には数えず、料金なしの記録にする（店の一覧から消えたら記録も消える）
@@ -430,29 +499,56 @@ def fetch_shop(fetcher: PageFetcher, reader: PdfReader, url: str, old: dict, *, 
     pdf = links[0]
     # 前回と同じ PDF なら If-None-Match で確かめる。古い版の記録も、取り直しの割り当て（refresh）でなければ同じ
     same_pdf = not refresh and pdf == old.get("pdf") and not old.get("status") and isinstance(old.get("tables"), list)
-    result, response = reader.read(pdf, old if same_pdf else None)
+    try:
+        result, response = reader.read(pdf, old if same_pdf else None)
+    except (Throttled, net.OutOfTime):
+        raise
+    except requests.RequestException as error:
+        # 通信の失敗。ページが変わった（PDF の URL か更新日時が変わった）と分かった後なら、前回の金額は古い PDF のものなので残さない。
+        # 確かめた日時は進めないので、巡回は失敗として数えて次の回に取り直す。ページが変わっていなければ前回の記録を残す
+        if current and (pdf != old.get("pdf") or page.modified != old.get("modified")):
+            unfetched = {**record, "extract": EXTRACT, "pdf": pdf, "status": "pdf-unfetched", "tables": [],
+                         "checked_at": old.get("checked_at", 0), "pdf_check": old.get("pdf_check", {})}
+            raise PdfUnfetched(unfetched, page.size, error) from error
+        raise
     if result == "same":
         return {**record, **{key: old[key] for key in PDF_FIELDS if key in old}}, page.size
     if result == "gone":
         return {**record, "extract": EXTRACT, "pdf": pdf, "status": "pdf-missing", "tables": []}, page.size
     body = response.content
+    last_modified = response.headers.get("Last-Modified", "")
     record.update({"pdf": pdf, "etag": response.headers.get("ETag"),
-                   "last_modified": response.headers.get("Last-Modified", ""), "length": len(body), "extract": EXTRACT})
+                   "last_modified": last_modified, "length": len(body), "extract": EXTRACT})
     size = page.size + len(body)
     if body[:4] != b"%PDF" or len(body) > MAX_PDF_BYTES:
         return {**record, "status": "unreadable-pdf", "tables": []}, size
     try:
-        return {**record, **extract(body)}, size
+        found = extract(body)
     except pypdfium2.PdfiumError:
         return {**record, "status": "unreadable-pdf", "tables": []}, size
+    found["pages"] = with_since(found["pages"], old, uploaded_at(last_modified, now))
+    return {**record, **found}, size
 
 
 def readable(shops: dict[str, dict]) -> int:
     return sum(1 for shop in shops.values() if shop.get("tables"))
 
 
+def explained(shop: dict) -> bool:
+    """料金表がない理由が記録から分かるか（閉店、PDF がない・2 つ以上・消えた・PDF でない・取れなかった、
+    告知を残す版で PDF を読み直して料金表のページがなかった）。validate_data.py の _maneki_raw と同じ考え"""
+    return bool(shop.get("status")) or (shop.get("extract") == EXTRACT and isinstance(shop.get("pages"), list))
+
+
 def accept(previous: dict[str, dict], shops: dict[str, dict]) -> bool:
-    return readable(shops) >= readable(previous) * MIN_RATIO
+    """料金表を読めた店が、理由の分からないまま 2 割より多く消えたら保存しない（取得や読み取りの壊れを疑う）。
+
+    理由の分かる消え方（年末年始に多くの店が PDF を差し替えた、PDF のリンクが 2 つになった など）は数えない。
+    そこで保存をやめると、前回の通常料金が最長 14 日残ってしまうため。
+    """
+    lost = sum(1 for key, shop in previous.items()
+               if shop.get("tables") and not (shops.get(key) or {}).get("tables") and not explained(shops.get(key) or {}))
+    return readable(previous) - lost >= readable(previous) * MIN_RATIO
 
 
 def backfill(pages: dict[str, str], shops: dict[str, dict], state: dict) -> set[str]:
@@ -491,6 +587,11 @@ def update(log=print) -> bool:
                 closed += shops[shop_id].get("status") == "closed"
             except (Throttled, net.OutOfTime):
                 raise
+            except PdfUnfetched as unfetched:  # 料金なしの記録を残し、失敗として数える（次の回に取り直す）
+                shops[shop_id] = unfetched.record
+                total += unfetched.size
+                log(f"  PDF を取れないので今回は料金なし {shop_id} ({unfetched})")
+                failed += 1
             except Exception as failure:  # 1 店の異常で残りを止めない。前回の記録を残す
                 log(f"  取得失敗 {shop_id} ({type(failure).__name__}: {failure})")
                 failed += 1
@@ -506,7 +607,7 @@ def update(log=print) -> bool:
         finished = False
     shops = {shop_id: shops[shop_id] for shop_id in pages if shop_id in shops}
     if not accept(previous, shops):
-        log(f"文字を読めた店が異常に少ないので前回の値を残します ({readable(previous)} → {readable(shops)})")
+        log(f"料金表を読めた店が理由の分からないまま異常に減ったので前回の値を残します ({readable(previous)} → {readable(shops)})")
         return False
     save(shops, int(time.time()) if finished and not failed else last_updated())
     stale = sum(1 for shop in shops.values() if shop.get("extract") != EXTRACT)
@@ -541,6 +642,7 @@ def from_cache(directory: Path) -> None:
             "pdf_check": {"checked_at": now},
             **extract(path),
         }
+        shops[shop_id]["pages"] = with_since(shops[shop_id]["pages"], {}, now)
         if len(links) != 1:
             shops[shop_id].update({"status": "several-pdfs" if links else "no-pdf", "tables": []})
     save(shops, now)

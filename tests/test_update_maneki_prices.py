@@ -132,9 +132,15 @@ class FetchShopTest(Base):
         self.assertEqual(shop["tables"], [["keep"]])
         self.assertGreater(shop["checked_at"], 1)
 
-    def test_pdf_is_checked_with_if_none_match_once_a_week_even_if_the_page_is_unchanged(self):
+    def test_pdf_is_checked_with_if_none_match_every_third_crawl_even_if_the_page_is_unchanged(self):
+        # 3 日ごとの巡回の 2 回目（6 日）はページの先頭だけ
         site = FakeSite(page=page_html(news=NEWS), pdf=FakeResponse(status=304))
-        old = current(pdf_check={"checked_at": int(time.time()) - 6 * 86400})
+        shop, size = self.fetch(site, current(pdf_check={"checked_at": int(time.time()) - 6 * 86400}))
+        self.assertEqual(site.pdf_calls(), [])
+        self.assertLessEqual(size, maneki.CHUNK)
+        # 3 回目（9 日）はページを最後まで読み、PDF を If-None-Match で確かめる
+        site = FakeSite(page=page_html(news=NEWS), pdf=FakeResponse(status=304))
+        old = current(pdf_check={"checked_at": int(time.time()) - 9 * 86400})
         shop, size = self.fetch(site, old)
         self.assertEqual(site.pdf_calls(), [("GET", {"If-None-Match": 'W/"a"'})])
         self.assertGreater(size, maneki.CHUNK)  # ページは最後まで読む
@@ -196,9 +202,12 @@ class FetchShopTest(Base):
         site = FakeSite(page=page_html(modified="new"), pdf=FakeResponse(status=404))
         shop, _ = self.fetch(site, current())
         self.assertEqual((shop["status"], shop["tables"]), ("pdf-missing", []))
-        site = FakeSite(pdf=FakeResponse(body=b"<html>not a pdf</html>\n%%EOF\n"))
-        shop, _ = self.fetch(site, current(modified="old", pdf=OTHER_PDF))
-        self.assertEqual((shop["status"], shop["tables"]), ("unreadable-pdf", []))
+        # PDF でない本文（HTML や S3 の XML のエラー。%%EOF はない）は、取り直さずにその日のうちに料金なし
+        for body in (b"<html>not a pdf</html>", b'<?xml version="1.0"?><Error><Code>AccessDenied</Code></Error>'):
+            site = FakeSite(pdf=FakeResponse(body=body))
+            shop, _ = self.fetch(site, current(modified="old", pdf=OTHER_PDF))
+            self.assertEqual((shop["status"], shop["tables"]), ("unreadable-pdf", []))
+            self.assertEqual(len(site.pdf_calls()), 1)
 
     def test_communication_failures_raise_so_the_previous_record_is_kept(self):
         with self.assertRaises(maneki.Throttled):
@@ -208,9 +217,33 @@ class FetchShopTest(Base):
         cut = page_html(modified="new")[:-200]
         with self.assertRaises(net.Incomplete):
             self.fetch(FakeSite(page=cut), current())
-        # PDF の本文が途中で切れた（%%EOF がない）
-        with self.assertRaises(net.Incomplete):
-            self.fetch(FakeSite(pdf=FakeResponse(body=b"%PDF-1.7 cut")), current(modified="old", pdf=OTHER_PDF))
+        # ページが変わっていない店の PDF の確かめ（9 日ごと）が通信の失敗なら、前回の記録を残す
+        old = current(pdf_check={"checked_at": int(time.time()) - 9 * 86400})
+        with self.assertRaises(requests.HTTPError):
+            self.fetch(FakeSite(pdf=FakeResponse(status=500)), old)
+
+    def test_pdf_not_fetched_after_the_page_changed_means_no_price(self):
+        # ページが変わって新しい PDF を指したのに PDF を取れない（5xx、本文の欠け）。古い PDF の金額は残さない
+        for pdf in (FakeResponse(status=500), FakeResponse(body=b"%PDF-1.7 cut")):
+            site = FakeSite(pdf=pdf)
+            old = current(modified="old", pdf=OTHER_PDF, checked_at=5, pdf_check={"checked_at": 5})
+            with self.assertRaises(maneki.PdfUnfetched) as caught:
+                self.fetch(site, old)
+            record = caught.exception.record
+            self.assertEqual((record["status"], record["tables"], record["pdf"]), ("pdf-unfetched", [], PDF))
+            self.assertEqual((record["checked_at"], record["pdf_check"]), (5, {"checked_at": 5}))  # 確かめた日時は進めない
+            self.assertGreater(caught.exception.size, maneki.CHUNK)
+        # 本文の欠けは新しい接続で読み直してから諦める
+        self.assertEqual(len(site.pdf_calls()), 1 + net.ATTEMPTS)
+        # 同じ PDF でも、ページの更新日時が変わっていれば同じ扱い
+        with self.assertRaises(maneki.PdfUnfetched):
+            self.fetch(FakeSite(pdf=FakeResponse(status=502)), current(modified="old"))
+        # 次の回は、ページが変わっていなくても最後まで読んで PDF を取り直す
+        site = FakeSite()
+        shop, _ = self.fetch(site, {**record, "modified": MODIFIED})
+        self.assertEqual(site.pdf_calls(), [("GET", None)])
+        self.assertEqual(shop["tables"], EXTRACTED["tables"])
+        self.assertNotIn("status", shop)
 
     def test_head_is_used_when_the_server_ignores_if_none_match(self):
         fetcher = fetcher_for(FakeSite())
@@ -239,9 +272,13 @@ class NoticesTest(unittest.TestCase):
                   '<li>12月は特別料金となります</li></ul></div></article>')
         self.assertEqual(maneki.store_notices(markup), [
             {"date": "2026-11-20", "text": "12/29~1/3は 年末年始特別料金です"},
-            {"date": "", "text": "12/31は 22:00 閉店"},
+            {"date": "", "kind": "special-hours", "text": "12/31は 22:00 閉店"},
             {"date": "", "text": "12月は特別料金となります"},
         ])
+        # 欄の作りが変わって読めないときは、日付のない特別営業時間の文として残す（変換は読まない）
+        changed = '<div class="storeDetail__info__specialHours__body"><p>12/31は 22:00 閉店</p></div>'
+        self.assertEqual(maneki.store_notices(changed), [{"date": "", "kind": "special-hours", "text": "特別営業時間の欄を読めません"}])
+        self.assertEqual(maneki.store_notices(NEWS), [{"date": "2026-11-20", "text": "12/29~1/3は 年末年始特別料金です"}])
         self.assertEqual(maneki.pdf_links(f'<a href="{PDF}"></a><a href="{PDF}"></a>'), [PDF])
 
 
@@ -313,6 +350,36 @@ class AcceptTest(unittest.TestCase):
         previous = {str(i): {"tables": [[1]]} for i in range(10)}
         self.assertFalse(maneki.accept(previous, {str(i): {"tables": [[1]]} for i in range(7)}))
         self.assertTrue(maneki.accept(previous, {str(i): {"tables": [[1]]} for i in range(8)}))
+        # 理由の分かる消え方（PDF のリンクが 2 つ、PDF を取れなかった、読み直して料金表がなかった）は数えない
+        explained = {str(i): {"tables": [[1]]} for i in range(5)}
+        explained.update({str(i): {"status": "several-pdfs", "tables": []} for i in range(5, 8)})
+        explained.update({"8": {"status": "pdf-unfetched", "tables": []}, "9": {"extract": maneki.EXTRACT, "pages": [], "tables": []}})
+        self.assertTrue(maneki.accept(previous, explained))
+        self.assertFalse(maneki.accept(previous, {**explained, "9": {"tables": []}, "8": {"tables": []}, "7": {}}))
+
+
+class SinceTest(unittest.TestCase):
+    """画像のページに、その店にその画像が載り始めた日時（since）を付ける"""
+
+    flyer = {"table": False, "chars": 0, "paths": 2, "images": 2, "image_area": 0.88, "look": "78f9717b71512533"}
+
+    def test_new_image_starts_at_the_upload_time_and_known_image_keeps_its_since(self):
+        now = 1_900_000_000
+        uploaded = maneki.uploaded_at("Mon, 23 Nov 2026 23:11:14 GMT", now)
+        self.assertEqual(uploaded, 1795475474)  # 2026-11-23 23:11:14 UTC
+        self.assertEqual(maneki.uploaded_at("", now), now)  # 読めなければ今
+        self.assertEqual(maneki.uploaded_at("Mon, 23 Nov 2099 23:11:14 GMT", now), now)  # 未来は今
+        table = {"table": True, "chars": 900, "paths": 250, "images": 4, "image_area": 0.01, "look": "8e8eccce8e8e480e"}
+        pages = maneki.with_since([dict(table), dict(self.flyer)], {}, uploaded)
+        self.assertNotIn("since", pages[0])
+        self.assertEqual(pages[1]["since"], uploaded)
+        # 前回の PDF に同じ見た目（4 ビット以内）の画像があれば、その日時を引き継ぐ
+        old = {"extract": maneki.EXTRACT, "pages": [{**self.flyer, "look": "78f9717b71512531", "since": 1_600_000_000}]}
+        self.assertEqual(maneki.with_since([dict(self.flyer)], old, uploaded)[0]["since"], 1_600_000_000)
+        # 見た目の違う新しい画像は、PDF を上げた日時から
+        self.assertEqual(maneki.with_since([{**self.flyer, "look": "f00ff00ff00ff00f"}], old, uploaded)[0]["since"], uploaded)
+        # 古い版の記録の日時は使わない
+        self.assertEqual(maneki.with_since([dict(self.flyer)], {**old, "extract": 1}, uploaded)[0]["since"], uploaded)
 
     def test_backfill_takes_the_oldest_old_records_with_tables_first(self):
         pages = {f"mn-{i}": "u" for i in range(80)}
@@ -368,6 +435,19 @@ class UpdateTest(Base):
         saved = self.saved()["shops"]
         self.assertEqual(saved["mn-1"]["tables"], [["old-1"]])
         self.assertEqual(saved["mn-4"]["tables"], [["new"]])
+
+    def test_pdf_not_fetched_is_saved_without_price_and_counted_as_a_failure(self):
+        def fetch(fetcher, reader, url, old, refresh=False):
+            if url.endswith("mn-1"):
+                raise maneki.PdfUnfetched({**old, "status": "pdf-unfetched", "tables": []}, 10, requests.HTTPError("500"))
+            return {**old, "tables": [["new"]]}, 10
+
+        with mock.patch.object(maneki, "fetch_shop", side_effect=fetch):
+            self.assertFalse(maneki.update(log=lambda line: None))
+        saved = self.saved()
+        self.assertEqual((saved["shops"]["mn-1"]["status"], saved["shops"]["mn-1"]["tables"]), ("pdf-unfetched", []))
+        self.assertEqual(saved["shops"]["mn-2"]["tables"], [["new"]])
+        self.assertEqual(saved["updated_at"], 7)
 
     def test_throttling_stops_and_keeps_what_was_read(self):
         def fetch(fetcher, reader, url, old, refresh=False):

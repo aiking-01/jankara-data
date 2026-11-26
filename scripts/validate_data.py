@@ -363,7 +363,7 @@ def _bigecho_raw(item, old, key, issues):
         issues.append(f"{key}: 料金ページ URL が異常")
 
 
-MANEKI_STATUS = {"closed", "no-pdf", "several-pdfs", "pdf-missing", "unreadable-pdf"}
+MANEKI_STATUS = {"closed", "no-pdf", "several-pdfs", "pdf-missing", "unreadable-pdf", "pdf-unfetched"}
 
 
 def _maneki_extra(item, key, issues):
@@ -387,6 +387,9 @@ def _maneki_extra(item, key, issues):
             if name == "news" and not re.fullmatch(r"(?:\d{4}-\d{2}-\d{2})?", str(row.get("date", ""))):
                 issues.append(f"{key}: お知らせの日付が不正")
                 break
+            if row.get("kind", "special-hours") != "special-hours":
+                issues.append(f"{key}: {name} の種類が不正")
+                break
     pages = item.get("pages", [])
     if not isinstance(pages, list) or len(pages) > 60:
         issues.append(f"{key}: pages が配列ではありません")
@@ -395,8 +398,10 @@ def _maneki_extra(item, key, issues):
             counts_ok = isinstance(page, dict) and all(type(page.get(k)) is int and page[k] >= 0 for k in ("chars", "paths", "images"))
             area = page.get("image_area") if isinstance(page, dict) else None
             look = page.get("look") if isinstance(page, dict) else None
+            since = page.get("since") if isinstance(page, dict) else None
             if (not counts_ok or not isinstance(page.get("table"), bool) or not isinstance(area, (int, float))
-                    or not 0 <= area <= 1 or (look is not None and not re.fullmatch(r"[0-9a-f]{16}", str(look)))):
+                    or not 0 <= area <= 1 or (look is not None and not re.fullmatch(r"[0-9a-f]{16}", str(look)))
+                    or (since is not None and (type(since) is not int or since <= 0))):
                 issues.append(f"{key}: ページの統計が不正")
                 break
 
@@ -407,7 +412,7 @@ def _maneki_raw(item, old, key, issues):
         issues.append(f"{key}: PDF tokens が配列ではありません")
         return
     _maneki_extra(item, key, issues)
-    # 料金なしになった理由が記録にある店（閉店、PDF がない・2 つ以上・消えた・壊れた）と、PDF を読み直して料金表の
+    # 料金なしになった理由が記録にある店（閉店、PDF がない・2 つ以上・消えた・壊れた・取れなかった）と、PDF を読み直して料金表の
     # ページがなかった店（文字をアウトライン化した PDF など）は、取得の異常ではない。変換は金額を出さない
     explained = item.get("status") in MANEKI_STATUS or (item.get("extract") == 2 and isinstance(item.get("pages"), list))
     if old and old.get("tables") and not tables and not explained:
