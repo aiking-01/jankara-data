@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """OCR で読む画像を決めて、作業フォルダに置く。
 
-対象は、カラオケ館の全店の 30 分料金の画像と、まねきねこで PDF の文字から金額を作れない店の 1 ページ目。
-前回読んだものと同じ画像（まねきねこは PDF の etag、カラオケ館は画像の sha256 で判断）は読み直さない。
+対象は、カラオケ館の全店の 30 分料金の画像。前回読んだものと同じ画像（画像の sha256 で判断）は読み直さない。
+まねきねこは対象にしない（OCR の結果を金額に使う変換がなく、PDF を取り直すだけ公式サイトへの負担になるため）。
+maneki_targets は残してあるが呼ばない。source/ocr.json に残っているまねきねこの行は消さない（消すと ocr の店数が
+大きく減り、validate_data.py が ocr.json ごと前回に戻してカラオケ館の更新も止まる）。
 
 使い方: python ocr/plan.py <作業フォルダ>
 作業フォルダに targets.json と画像を置く。
@@ -90,7 +92,7 @@ def main() -> None:
     session = requests.Session()
     session.headers["User-Agent"] = USER_AGENT
     chosen, failed = [], 0
-    for target in maneki_targets() + kan_targets():
+    for target in kan_targets():
         if target["key"] and stored.get(target["id"], {}).get("key") == target["key"]:
             continue
         try:

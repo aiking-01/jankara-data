@@ -3,6 +3,8 @@
 // 対象は 30 分料金だけ。フリータイム、パック、ZERO カラ、小中学生コース、まふは計算しない。
 // PDF は複数ページのものが多く、1 ページ目は 2 名以上の料金で、1 人料金が別のページにある店がある。
 // 文字は [文字列, 左, 上, 右, 下]。座標はページごとで、y は下向き。
+// 料金表のほかに、PDF の全ページの文、ページごとの画像の量、店のページのお知らせも見る（update_maneki_prices.py が残す）。
+// 特別料金・年末年始・料金改定などの告知の期間が、今日から 21 日先までと重なる店は読まない。期間が読めない告知も読まない。
 
 import { dayLabels, parseDays } from './bigecho.js';
 
@@ -76,9 +78,15 @@ const clockOf = (text) => {
 };
 const rangeOf = (pair) => `${pair[0].text}～${pair[1].text.replace('翌', '')}`;
 
-// 帯の時刻の右にある説明。30 分料金に関わるかもしれない説明がある表は読まない
-const HARMLESS_NOTE = /^(?:※?(?:[^※]*(?:フリー|FT)[^※]*|[^※]*混雑[^※]*|最終受付[^※]*|(?:お1人様・非会員様|おひとり様利用)は一般料金[^※]*)?|ワンドリンクorドリンクバー|※?(?:ワン)?ドリンクオーダー制)$/;
+// 帯の時刻の右にある説明。30 分料金に関わるかもしれない説明がある表は読まない。
+// 帯の「最終受付」は無害ではない（受付の後の入店に金額を出してしまう）ので、ここでは通さず bandNote で読む
+const HARMLESS_NOTE = /^(?:※?(?:[^※]*(?:フリー|FT)[^※]*|[^※]*混雑[^※]*|(?:お1人様・非会員様|おひとり様利用)は一般料金[^※]*)?|ワンドリンクorドリンクバー|※?(?:ワン)?ドリンクオーダー制)$/;
 const CHANGES_PRICE = /30分|一律|追加|\+\d|\d+月\d+日|期間/;
+// フリータイムの説明に見えても、帯の金額の使い方を変える注記（「日・祝は【深夜フリータイム】の料金で18時から入室可」など）
+const CHANGES_USE = /料金|入室|適用/;
+// 帯の最終受付。「※最終受付は翌朝4:00」「※最終受付は翌3:59まで」
+const LAST_ENTRY = /^※?最終(?:受付|入室)(?:は|:)?(翌朝?)?(\d{1,2}):(\d{2})(?:まで)?$/;
+const OTHER_PLAN_NAME = /フリー|FT|パック|まふ/;
 const WIDER_HOURS = /^※?(?:週末|土日祝日?|金・?土・?祝前?|金曜・土曜)(?:\([^)]*\))?は(\d{1,2}:\d{2})~?(翌?\d{1,2}:\d{2})$/;
 const SECTION_HEAD = /^(?:会員|会員\(お1人様\)|一般|一般様|一般\(お1人様\)|1名様|お1人様料金|おひとり様料金|お(?:ひとり|一人)様\/一般|非会員様・?1名様利用時.*)$/;
 const SOLO_TITLE = /^(?:お?1人(?:様)?料金|お1人様用|1名様料金)$/;
@@ -92,10 +100,39 @@ const spanOf = (from, to) => {
   return [start, end];
 };
 
-function noteAllows(tokens, pair) {
+function noteOf(tokens, pair) {
   const line = tokens.filter((token) => token.left > pair[1].right && token.top < pair[1].bottom && token.bottom > pair[1].top && !SECTION_HEAD.test(token.text) && !token.text.startsWith('≪'))
     .sort((a, b) => a.left - b.left).map((token) => token.text).join('');
-  const note = line.replace(/\(フリー[^)]*\)/g, '').replace(/ワンドリンクorドリンクバー$/, '');
+  return line.replace(/\(フリー[^)]*\)/g, '').replace(/ワンドリンクorドリンクバー$/, '');
+}
+
+// 帯の注記に、フリータイムやパックではなく帯そのものの最終受付が書いてあるか
+function mentionsLastEntry(note) {
+  for (const segment of note.split('※')) {
+    const text = segment.replace(/\([^()]*\)/g, (group) => (OTHER_PLAN_NAME.test(group) ? '' : group));
+    for (const match of text.matchAll(/最終(?:受付|入室)/g)) {
+      if (!OTHER_PLAN_NAME.test(text.slice(0, match.index))) return true;
+    }
+  }
+  return false;
+}
+
+// 帯の注記を読む。{ allowed, lastEntry }。帯の最終受付は読める形なら lastEntry にし、読めなければ帯ごと読まない
+function bandNote(tokens, pair) {
+  const note = noteOf(tokens, pair);
+  const entry = LAST_ENTRY.exec(note);
+  if (entry) {
+    const clock = `${entry[1] ? '翌' : ''}${Number(entry[2])}:${entry[3]}`;
+    const [from, to] = spanOf(pair[0].text, pair[1].text);
+    const last = spanOf(pair[0].text, clock)[1];
+    return last > from && last <= to ? { allowed: true, lastEntry: clock } : { allowed: false };
+  }
+  if (mentionsLastEntry(note)) return { allowed: false };
+  if (/フリー|FT/.test(note) && CHANGES_USE.test(note)) return { allowed: false };
+  return { allowed: noteAllows(note, pair), lastEntry: '' };
+}
+
+function noteAllows(note, pair) {
   // 「※金・土・祝前は翌3:00まで」のように終わりが帯より遅いだけなら、帯の中の金額は変わらない
   const later = LATER_CLOSE.exec(note);
   if (later && spanOf(pair[0].text, later[1])[1] >= spanOf(pair[0].text, pair[1].text)[1]) return true;
@@ -176,7 +213,8 @@ const dayText = (text) => text.replace(/^平日:/, '').replace(/([金祝前])[�
 function readBand(tokens, label) {
   const pair = bandHeader(tokens, label);
   if (!pair) return { reason: 'no-band-time' };
-  if (!noteAllows(tokens, pair)) return { reason: 'band-note' };
+  const note = bandNote(tokens, pair);
+  if (!note.allowed) return { reason: 'band-note' };
   const header = { bottom: Math.max(pair[0].bottom, pair[1].bottom) };
   const row = priceRow(tokens, header, label);
   if (!row) return { reason: 'no-price-row' };
@@ -213,7 +251,7 @@ function readBand(tokens, label) {
   const priceColumns = Object.values(sections).reduce((sum, cells) => sum + cells.length, 0);
   const headsOfDay = dayHeads.length;
   if (priceColumns !== headsOfDay) return { reason: `price-count ${priceColumns}/${headsOfDay}` };
-  return { from: pair[0].text, to: pair[1].text, range: rangeOf(pair), sections, plus };
+  return { from: pair[0].text, to: pair[1].text, range: rangeOf(pair), lastEntry: note.lastEntry, sections, plus };
 }
 
 // 同じ曜日の並びの金額を engine の days にする
@@ -276,14 +314,206 @@ function soloFromTable(table, plans) {
       return prices;
     });
     if (!days) return null;
-    list.push({ name: '30分', hours: band.range, last_entry: '', days });
+    list.push({ name: '30分', hours: band.range, last_entry: band.lastEntry ?? '', days });
   }
   const hours = (items) => items.map((item) => item.hours).sort().join();
   return hours(list) === hours(plans) ? list : null;
 }
 
+// ---- 告知と記録の確認 ----
+
+// 取り出しの版。update_maneki_prices.py の EXTRACT と同じ値。告知（全ページの文、ページごとの画像の量、
+// 店のページのお知らせ）を残していない古い記録は、告知を確かめられないので読まない
+export const EXTRACT_VERSION = 2;
+// アプリは配った料金を最長 21 日使い、利用者は先の日付も選べる。告知の期間がこの範囲と重なれば読まない
+const WINDOW_DAYS = 21;
+const DAY_MS = 86400000;
+// 料金や営業の期間を知らせる語。文字の切れ目を除いた文で探す
+const PERIOD_WORDS = /特別(?:料金|価格|期間|営業|日料金)|年末|年始|お盆|GW|ゴールデンウィーク|大型連休|繁忙|(?:料金|価格)の?(?:改定|変更)|新料金|特定日|休業|時短営業|営業時間の?変更/g;
+// 全店に載る「年末年始などの特別期間は料金が異なる場合がございます」のような断り書き。日付がなければ告知とみなさない
+const HEDGE = /場合が(?:ござい|あり)ます|場合もございます|ことがございます/;
+// 告知の語から日付を探す範囲（文字数）。PDF の文は描かれた順なので、遠くの日付は別の欄のものとみなす
+const NEAR_BEFORE = 40;
+const NEAR_AFTER = 60;
+const DATE_ITEM = new RegExp([
+  /(?:(20\d{2})年)?(\d{1,2})月(\d{1,2})日/.source, // 12月29日、2026年12月29日
+  /(?<![\d/.])(?:(20\d{2})[/.])?(\d{1,2})\/(\d{1,2})(?![\d/])/.source, // 12/29、2026/12/29
+  /(20\d{2})\.(\d{1,2})\.(\d{1,2})(?![\d.])/.source, // 2026.12.29
+  /(?<=[~〜・、,])(\d{1,2})日/.source, // 12月29日・30日、11月2日~4日 の後ろの日
+  /(?:(20\d{2})年)?(\d{1,2})月(?!\d)(?![~〜](?!\d))/.source, // 12月より、1月まで、10月~3月（「月~金」の曜日は除く）
+].join('|'), 'g');
+// 画像が料金表のページを覆っていないか、表でないページが画像の告知や画像にした料金表でないか。
+// look は update_maneki_prices.py が残すページの見た目の指紋（64 ビット）。同じ案内の画像なら数ビットしか違わない
+const VISUAL_AREA = 0.15;
+const LOOK_DISTANCE = 4; // 同じ画像とみなす違い
+const TABLE_LIKE = 12; // どこかの店の料金表のページとこれ以下の違いなら、画像にした料金表とみなす
+const COMMON_SHARE = 0.05; // 画像のページがある店のうち、これだけの店（少なくとも COMMON_MIN 店）に同じ画像があれば全店共通の案内
+const COMMON_MIN = 10;
+
+const dayNumber = (year, month, day) => Date.UTC(year, month - 1, day) / DAY_MS;
+const lastDayOf = (year, month) => new Date(Date.UTC(year, month, 0)).getUTCDate();
+
+// 変換する日（JST の今日）。確かめるときは引数か CONVERT_DATE=YYYY-MM-DD で差し替える
+export function todayNumber(given) {
+  const env = typeof process !== 'undefined' ? (process.env.CONVERT_DATE || process.env.CONVERT_TODAY) : undefined;
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(given ?? env ?? '');
+  if (match) return dayNumber(Number(match[1]), Number(match[2]), Number(match[3]));
+  return Math.floor((Date.now() + 9 * 3600 * 1000) / DAY_MS);
+}
+
+// 年のない日付は今日に最も近い年とみなす（21 日の範囲と重なるかの判定では、遠い年の取り違えは結果を変えない）
+function nearestYear(month, day, today) {
+  const year = new Date(today * DAY_MS).getUTCFullYear();
+  return [year - 1, year, year + 1].reduce((best, candidate) => (
+    Math.abs(dayNumber(candidate, month, day) - today) < Math.abs(dayNumber(best, month, day) - today) ? candidate : best));
+}
+
+// 文の中の日付を [{ index, end, month, day?, year? }] で返す。日だけの項目は直前の月を使う
+function dateItems(text) {
+  const items = [];
+  for (const match of text.matchAll(DATE_ITEM)) {
+    const [, y1, m1, d1, y2, m2, d2, y3, m3, d3, d4, y5, m5] = match;
+    const base = { index: match.index, end: match.index + match[0].length };
+    let item = null;
+    if (m1) item = { ...base, year: y1, month: m1, day: d1 };
+    else if (m2) item = { ...base, year: y2, month: m2, day: d2 };
+    else if (m3) item = { ...base, year: y3, month: m3, day: d3 };
+    else if (d4 && items.length) item = { ...base, year: items.at(-1).year, month: items.at(-1).month, day: d4, follows: true };
+    else if (m5) item = { ...base, year: y5, month: m5, day: null };
+    if (!item) continue;
+    item.year = item.year ? Number(item.year) : null;
+    item.month = Number(item.month);
+    item.day = item.day === null ? null : Number(item.day);
+    if (item.month < 1 || item.month > 12 || (item.day !== null && (item.day < 1 || item.day > 31))) continue;
+    items.push(item);
+  }
+  return items;
+}
+
+const stripDays = (text) => text.replace(/\([^()]{0,6}\)/g, '');
+
+// 日付の項目を [始まり, 終わり]（日の番号。開いた端は ±Infinity）にする
+function spansOf(text, items, today) {
+  const spans = [];
+  const at = (item, year, first) => {
+    if (item.day !== null) return dayNumber(year, item.month, item.day);
+    return dayNumber(year, item.month, first ? 1 : lastDayOf(year, item.month));
+  };
+  for (let i = 0; i < items.length; i += 1) {
+    const item = items[i];
+    const next = items[i + 1];
+    const year = item.year ?? nearestYear(item.month, item.day ?? 15, today);
+    // 「12月29日(月)~1月3日(土)」「11月2日~4日」
+    if (next && /^(?:[~〜\-ー－]|から|より)$/.test(stripDays(text.slice(item.end, next.index)))) {
+      const start = at(item, year, true);
+      let nextYear = next.year ?? year;
+      if (!next.year && at(next, nextYear, false) < start) nextYear += 1;
+      spans.push([start, at(next, nextYear, false)]);
+      i += 1;
+      continue;
+    }
+    const after = stripDays(text.slice(item.end, item.end + 10));
+    const before = text.slice(Math.max(0, item.index - 2), item.index);
+    if (/^(?:[~〜]|から|より|以降)/.test(after)) spans.push([at(item, year, true), Infinity]);
+    else if (/^まで/.test(after) || /[~〜]$/.test(before)) spans.push([-Infinity, at(item, year, false)]);
+    else spans.push([at(item, year, true), at(item, year, false)]);
+  }
+  return spans;
+}
+
+// 告知の文から、読まない理由を返す。期間が今日から 21 日先までと重なれば 'notice'、期間が読めなければ 'notice-undated'
+export function noticeReason(texts, today) {
+  for (const raw of texts) {
+    const text = (raw ?? '').normalize('NFKC').replace(/\s+/g, '');
+    for (const clause of text.split(/[。※◆■●★☆]/)) {
+      const items = dateItems(clause);
+      for (const word of clause.matchAll(PERIOD_WORDS)) {
+        const near = items.filter((item) => item.end >= word.index - NEAR_BEFORE && item.index <= word.index + word[0].length + NEAR_AFTER);
+        if (!near.length) {
+          if (HEDGE.test(clause)) continue;
+          return 'notice-undated';
+        }
+        const spans = spansOf(clause, near, today);
+        const start = Math.min(...spans.map((span) => span[0]));
+        const end = Math.max(...spans.map((span) => span[1]));
+        if (start <= today + WINDOW_DAYS && end >= today) return 'notice';
+      }
+    }
+  }
+  return null;
+}
+
+// 表でないページのうち、画像や文字を描いた図形が中心のもの（update_maneki_prices.py の visual と同じ条件）
+const isVisual = (page) => !page.table
+  && ((page.image_area ?? 0) >= VISUAL_AREA || ((page.chars ?? 0) < 20 && ((page.paths ?? 0) >= 100 || (page.images ?? 0) >= 10)));
+
+const bitCount = (value) => {
+  let count = 0;
+  for (let rest = value >>> 0; rest; rest &= rest - 1) count += 1;
+  return count;
+};
+const lookBits = (look) => [parseInt(look.slice(0, 8), 16), parseInt(look.slice(8), 16)];
+const lookDistance = (a, b) => bitCount(a[0] ^ b[0]) + bitCount(a[1] ^ b[1]);
+
+// 多くの店の PDF に同じ見た目で入っている画像のページ（全店共通の飲み放題の案内など）の look。
+// 店ごとの告知の画像は 1 店か数店にしかない。料金表に似た画像は、多くの店にあっても共通の案内とみなさない
+// （年末年始の料金表を画像で足した店が多くても通さない）
+export function commonLooks(shops) {
+  const visuals = [];
+  const tables = [];
+  const valid = (look) => /^[0-9a-f]{16}$/.test(look ?? '');
+  for (const [id, shop] of Object.entries(shops ?? {})) {
+    if (shop?.extract !== EXTRACT_VERSION) continue;
+    for (const page of shop.pages ?? []) {
+      if (!valid(page.look)) continue;
+      if (page.table) tables.push(lookBits(page.look));
+      else if (isVisual(page)) visuals.push({ id, look: page.look, bits: lookBits(page.look) });
+    }
+  }
+  const owners = new Set(visuals.map((item) => item.id)).size;
+  const needed = Math.max(COMMON_MIN, Math.ceil(owners * COMMON_SHARE));
+  const common = new Set();
+  for (const item of visuals) {
+    if (common.has(item.look) || tables.some((bits) => lookDistance(bits, item.bits) <= TABLE_LIKE)) continue;
+    const others = new Set(visuals.filter((other) => other.id !== item.id && lookDistance(item.bits, other.bits) <= LOOK_DISTANCE).map((other) => other.id));
+    if (others.size >= needed) common.add(item.look);
+  }
+  return common;
+}
+
+// 記録から読まない理由を返す。表を読む前に確かめる
+function recordReason(info, options) {
+  if (!info || info.extract !== EXTRACT_VERSION) return 'old-extract';
+  if (info.status) return String(info.status);
+  // 料金表の PDF が 2 つ以上あると、どれが通常の料金か分からない（期間限定の PDF を通常料金として読まない）
+  if (info.pdfs !== 1) return info.pdfs ? 'several-pdfs' : 'no-pdf';
+  const notices = [...(info.notices ?? []), ...(info.news ?? [])];
+  if (notices.some((notice) => notice?.cut)) return 'notice-cut';
+  const notice = noticeReason(notices.map((item) => item?.text), todayNumber(options.today));
+  if (notice) return notice;
+  for (const page of info.pages ?? []) {
+    if (page.table && (page.image_area ?? 0) >= VISUAL_AREA) return 'image-on-table';
+    if (isVisual(page) && !options.commonLooks?.has(page.look)) return 'image-page';
+  }
+  return null;
+}
+
+// convert.mjs から使う。全店の記録から共通の画像を数えてから、店ごとに変換する関数を返す
+export function manekiConverter(shops, options = {}) {
+  const common = commonLooks(shops);
+  return (shop) => convertManeki(shop?.tables, shop, { ...options, commonLooks: common });
+}
+
+// 店の記録（update_maneki_prices.py が残したもの）から { regular, solo, flat, minStay } か { reason } を返す。
+// info を渡さなければ告知を確かめられないので読まない
+export function convertManeki(tables, info, options = {}) {
+  const reason = recordReason(info, options);
+  if (reason) return { reason };
+  return convertTables(tables);
+}
+
 // PDF のページごとの文字の並びから { regular, solo, flat, minStay } か { reason } を返す
-export function convertManeki(tables) {
+function convertTables(tables) {
   const pages = (tables ?? []).filter((raw) => raw?.length);
   if (!pages.length) return { reason: 'no-text' };
   // 1 人料金の表は別のページにある。「会員(お1人様)」の見出しだけの表は、通常の表がなければ 1 人用か判断できない
@@ -325,7 +555,7 @@ export function convertManeki(tables) {
       return prices;
     });
     if (!days) return { reason: 'unreadable-days' };
-    plans.push({ name: '30分', hours: band.range, last_entry: '', days, drink });
+    plans.push({ name: '30分', hours: band.range, last_entry: band.lastEntry ?? '', days, drink });
     const soloCells = solo ?? (soloIsGeneral ? general : null);
     if (soloCells) {
       const soloDays = daysRows(members, (cell) => {
@@ -333,7 +563,7 @@ export function convertManeki(tables) {
         return value ? { 会員: value } : {};
       });
       if (!soloDays) return { reason: 'unreadable-days' };
-      soloPlans.push({ name: '30分', hours: band.range, last_entry: '', days: soloDays });
+      soloPlans.push({ name: '30分', hours: band.range, last_entry: band.lastEntry ?? '', days: soloDays });
     }
   }
   if (flats.solo.size > 1 || flats.general.size > 1) return { reason: 'flat-varies' };

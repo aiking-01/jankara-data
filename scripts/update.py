@@ -452,8 +452,41 @@ def parse_maneki(url, markup):
                      hours.group(1) if hours else "", reserve_link("まねきねこ", markup))
 
 
+MANEKI_ATTEMPTS = 3
+MANEKI_DELAY = 1.0  # まねきねこへのリクエストは 1 秒以上あける
+
+
+def maneki_page(session, nonce, page, delay):
+    """店一覧の「もっと見る」の 1 ページ（読むだけの POST）。
+
+    プロキシが途中で止まることがあるので、読み取りの失敗と 500/502/504 は新しい接続で 3 回まで読み直す。
+    それでも取れなければ例外を投げ、呼び出し側は前回の一覧を残す（途中までの一覧で閉店と誤らない）。
+    """
+    for attempt in range(MANEKI_ATTEMPTS):
+        time.sleep(max(delay, MANEKI_DELAY) + 3 * attempt)
+        try:
+            response = session.post(MANEKI_AJAX, data={
+                "action": "loc_load_more", "nonce": nonce, "page": page,
+                "paged": page, "per_page": 30, "pref": "", "city": "", "q": "",
+            }, timeout=(10, 30))
+            if response.status_code in (429, 503):
+                raise FetchStopped(f"Manekineko HTTP {response.status_code}")
+            if response.status_code in (500, 502, 504):
+                raise requests.HTTPError(f"Manekineko HTTP {response.status_code} (page {page})")
+            response.raise_for_status()
+            return response.json()["data"]
+        except (requests.ConnectionError, requests.Timeout, requests.HTTPError, ValueError) as error:
+            if isinstance(error, requests.HTTPError) and error.response is not None and error.response.status_code < 500:
+                raise
+            if attempt == MANEKI_ATTEMPTS - 1:
+                raise
+            print(f"まねきねこ: 店一覧の {page} ページ目を読み直します ({type(error).__name__})", flush=True)
+            session.close()  # 次は新しい接続で読む
+    raise AssertionError("unreachable")
+
+
 def maneki_urls(session, delay):
-    time.sleep(delay)
+    time.sleep(max(delay, MANEKI_DELAY))
     html = request(session, MANEKI_URL).text
     found = re.search(r"LOC_AJAX\s*=\s*(\{.*?\})", html)
     if not found:
@@ -462,15 +495,8 @@ def maneki_urls(session, delay):
     urls = dict.fromkeys(MANEKI_PATTERN.findall(html))
     page = 1
     for _ in range(200):  # bound pagination on a broken API
-        time.sleep(delay)
-        response = session.post(MANEKI_AJAX, data={
-            "action": "loc_load_more", "nonce": nonce, "page": page,
-            "paged": page, "per_page": 30, "pref": "", "city": "", "q": "",
-        }, timeout=35)
-        if response.status_code in (429, 503):
-            raise FetchStopped(f"Manekineko HTTP {response.status_code}")
-        response.raise_for_status()
-        data = response.json()["data"]
+        # 失敗したページは maneki_page の中で読み直し、取れたらそのページから続ける（最初のページからやり直さない）
+        data = maneki_page(session, nonce, page, delay)
         urls.update(dict.fromkeys(MANEKI_PATTERN.findall(data["html"])))
         if not data.get("has_more"):
             return list(urls)

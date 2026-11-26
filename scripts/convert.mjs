@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { convertBigEcho } from './web/bigecho.js';
-import { convertManeki } from './web/maneki.js';
+import { manekiConverter } from './web/maneki.js';
 import { convertMegabig } from './web/megabig.js';
 import { convertKanOcr } from './web/ocr.js';
 import { convertCotedazurShops } from './web/cotedazur.js';
@@ -16,7 +16,8 @@ const FIELDS = ['regular', 'solo', 'week', 'flat', 'minStay', 'alerts', 'source_
 const TARGETS = {
   joysound: ['joysound_prices.json', (shop) => convertJoysound(shop.sections, shop.opening_hours)],
   bigecho: ['chain_prices.json', (shop) => convertBigEcho(shop.sections, shop.hours)],
-  maneki: ['maneki_prices.json', (shop) => convertManeki(shop.tables)],
+  // まねきねこは全店の記録から共通の画像（飲み放題の案内など）を数えてから、告知と料金表を店ごとに確かめる
+  maneki: ['maneki_prices.json', manekiConverter(JSON.parse(readFileSync(join(ROOT, 'source', 'maneki_prices.json'), 'utf8')).shops)],
   megabig: ['megabig_prices.json', (shop) => convertMegabig(shop.sections, shop.hours)],
   kan: ['ocr.json', (shop) => (shop.chain === 'カラオケ館' ? convertKanOcr(shop.reads) : { reason: 'other-chain' })],
 };
