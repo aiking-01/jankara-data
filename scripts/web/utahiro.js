@@ -6,8 +6,10 @@
 // - 区分は「ウタ学」（アプリ会員の学割）を学生会員、「一般」を一般にする。ウタ学の会員限定プランは画像なので読まない。
 // - 「※2名様より受付」の列は出さない（engine に人数の条件がなく、1 人にも出してしまう）。
 // - 1 人の料金は表にないので solo は作らない（engine が「1 人の料金は記載がない」と添える）。
-// - 告知（p.db-infotext）に日付のある期間が、変換する日から 21 日先までと重なる店は出さない。アプリは 21 日より
-//   古い配信ファイルの金額を使わないので、配った金額が告知の期間に使われることはない。
+// - 告知（p.db-infotext）の料金・営業時間の変更の期間がまだ終わっていない店は、始まる日が先でも出さない。
+//   アプリでは何日先の入店日でも選べ、engine は期間を見ないので、配ると期間中の日付にも通常料金が出てしまう。
+//   期間が終わった店も、終わった後に確かめた記録になるまでは出さない（期間中に取った表かもしれない）。
+// - 料金表の末尾の注記は、知っている文だけを許す。日付や条件の注記が足されたら、その店は出さない。
 
 const DAY = 1440;
 const WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土'];
@@ -36,11 +38,24 @@ const CHANGE = '(?:一部料金|料金|オープン時間|営業時間|閉店時
   + '(?:詳しくは店舗まで直接お問い合わせをお願いいたします。)?';
 const NOTICE_RANGE = new RegExp(`^${DATE}~${DATE}(?:まで、|の期間中は)${CHANGE}$`);
 const NOTICE_FROM = new RegExp(`^${DATE}から${CHANGE}$`);
-// 配った金額をアプリが使う日数（app.js は 21 日より古い配信ファイルを使わない）
-export const NOTICE_HORIZON_DAYS = 21;
 
 const norm = (text) => String(text ?? '').normalize('NFKC').replace(/[～〜]/g, '~')
   .replace(/[ \t]+/g, ' ').trim();
+// 空白は HTML の改行の入り方で変わるので、比べるときは除く
+const tailKey = (line) => norm(line).replace(/\s/g, '');
+// 料金表の末尾の注記として許す文（2026-11-26 に保存した 17 店はすべてこの 6 行で、順番も同じ）。
+// これ以外の行（「※12/24・25は特別料金」のような日付や条件の注記）が 1 つでもあれば、その店は出さない
+const TAX = 'お1人様税込料金です。';
+const TAIL_LINES = new Set([
+  TAX,
+  'ソフトドリンク飲み放題 ドリンクバーをご利用いただけます。',
+  'アルコール飲み放題 アルコールドリンクの他、ノンアルコールカクテル、 プレミアムソフトドリンク、ソフトドリンクバー約150種類が飲み放題！',
+  '※混雑時、フリータイムのご利用は制限させていただく場合がございます。予めご了承ください。',
+  'お1人様でのご利用に関して',
+  '当店はお1人様でのご利用(ヒトカラ)も可能です。 ただし、ルーム数には限りがあるため、適正な収容人数のルームが空くまで'
+    + 'お待ちいただく場合や混雑時はお1人様でのご利用をご遠慮いただく場合がございます。予めご了承ください。 '
+    + '詳しくは店舗まで直接お問い合わせください。',
+].map((line) => tailKey(line)));
 const lines = (text) => String(text ?? '').split('\n').map(norm).filter(Boolean);
 const clockText = (minutes) => `${Math.floor((minutes % DAY) / 60)}:${String(minutes % 60).padStart(2, '0')}`;
 
@@ -172,9 +187,16 @@ export function noticePeriods(notices) {
   return periods;
 }
 
-// 期間が、変換する日から 21 日先までの入店と重なるか。前の日の夜からの滞在と、最後の日の夜から翌朝までの滞在も含める
-export function overlapsHorizon(period, today) {
-  return period.from <= today + NOTICE_HORIZON_DAYS + 1 && period.to >= today - 1;
+// 期間がまだ終わっていないか（始まる日は問わない）。最後の日の夜から翌朝までの滞在も期間に含めるので、
+// 最後の日の翌日もまだ終わっていないとみなす
+export function notOver(period, today) {
+  return period.to >= today - 1;
+}
+
+// 期間が終わった後に確かめた記録か。最後の日の夜からの滞在が終わり、公式の表が戻ったと言えるのは
+// 最後の日の 2 日後（JST 0 時）から。その前に取った記録は、期間中の表かもしれない
+export function checkedAfter(period, checkedAt) {
+  return checkedAt >= (period.to + 2) * 86400 - 9 * 3600;
 }
 
 function readHeader(cells) {
@@ -317,10 +339,12 @@ function checkFree(plans, hours) {
   return null;
 }
 
+// 末尾の注記。税込の記載があり、ほかは知っている文だけであること
 function checkTail(tail) {
-  const text = norm((tail ?? []).join('\n'));
-  if (!/お1人様税込料金です/.test(text)) return 'tax';
-  if (/税別|税抜|別途|室料|ルームチャージ|入室料|サービス料|入会金/.test(text)) return 'extra-charge';
+  if (!Array.isArray(tail) || tail.some((item) => typeof item !== 'string')) return 'tail';
+  const keys = lines(tail.join('\n')).map(tailKey);
+  if (keys.some((key) => !TAIL_LINES.has(key))) return 'tail';
+  if (!keys.includes(tailKey(TAX))) return 'tax';
   return null;
 }
 
@@ -355,23 +379,26 @@ export function convertUtahiro(shop) {
   return { regular, week: hours.week };
 }
 
-// 全店を変換する。today は変換する日（JST の 'YYYY-MM-DD'）。
-// 告知の期間がこの日から 21 日先までと重なる店は出さない。ほかの店で見つかった料金変更の期間も、その告知を見た日時より
-// 前に確かめた店には当てる（3 日に 1 回しか取らないので、全店に出た告知にまだ気づいていないかもしれない）。
-// 営業時間の変更は店ごとのことなので、ほかの店には当てない
-export function convertUtahiroShops(records, today) {
+// 全店を変換する。today は変換する日（JST の 'YYYY-MM-DD'）。lastSeen は店ごとの最後に確かめた日時
+// （source/seen.json。表が変わらない日は select_changes.py が元データの checked_at を前回のまま戻すので、こちらも見る）。
+// - 料金・営業時間の変更の期間がまだ終わっていない店は、始まる日に関係なく出さない
+// - 期間が終わった店は、終わった後に確かめた記録になるまで出さない
+// - ほかの店で見つかった料金変更の期間も、その告知を見た日時より前に確かめた店には当てる（3 日に 1 回しか取らないので、
+//   全店に出た告知にまだ気づいていないかもしれない）。営業時間の変更は店ごとのことなので、ほかの店には当てない
+export function convertUtahiroShops(records, today, lastSeen = {}) {
   const day = dayOf(today);
   if (day === null) throw new Error(`utahiro: 変換する日が不正です (${today})`);
   const shops = {};
   const reasons = {};
   const parsed = {};
   const seenAt = new Map(); // 期間 → その告知のある店を確かめた日時の最小
+  const stamp = (value) => (Number.isInteger(value) && value > 0 ? value : 0);
   for (const [id, shop] of Object.entries(records ?? {})) {
     const periods = shop && typeof shop === 'object' ? noticePeriods(shop.notices) : null;
     parsed[id] = periods;
     for (const period of (periods ?? []).filter((item) => item.price)) {
       const key = `${period.from}-${period.to}`;
-      const at = Number.isInteger(shop.checked_at) ? shop.checked_at : 0;
+      const at = stamp(shop.checked_at);
       const known = seenAt.get(key);
       if (!known || at < known.at) seenAt.set(key, { period, at });
     }
@@ -380,11 +407,12 @@ export function convertUtahiroShops(records, today) {
     let reason;
     try {
       const periods = parsed[id];
-      const checked = Number.isInteger(shop?.checked_at) ? shop.checked_at : 0;
+      const checked = Math.max(stamp(shop?.checked_at), stamp(lastSeen?.[id]));
       if (!shop || typeof shop !== 'object') reason = 'record';
       else if (periods === null) reason = 'notice-unknown';
-      else if (periods.some((period) => overlapsHorizon(period, day))) reason = 'notice-period';
-      else if ([...seenAt.values()].some(({ period, at }) => checked < at && overlapsHorizon(period, day))) {
+      else if (periods.some((period) => notOver(period, day))) reason = 'notice-period';
+      else if (periods.some((period) => !checkedAfter(period, checked))) reason = 'notice-recheck';
+      else if ([...seenAt.values()].some(({ period, at }) => checked < at && notOver(period, day))) {
         reason = 'notice-other-shop';
       } else {
         const converted = convertUtahiro(shop);

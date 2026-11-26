@@ -57,10 +57,19 @@ console.log(`cotedazur: ${accepted}/${original} shops (${coteFailures.length} un
 // 元データがない初回や、変換が途中で失敗したときは、配る店なしにしてほかのチェーンの変換を続ける
 const utahiroPath = join(ROOT, 'source', 'utahiro_prices.json');
 const utahiro = { updated_at: 0, shops: {} };
+// 店ごとの最後に確かめた日時（seen.py が select_changes.py の前に残す）。告知の期間が終わった後に確かめたかを見る。
+// 読めなければ元データの checked_at だけで判断する（取り直したことが分からない店は出さない側になる）
+let utahiroSeen = {};
+try {
+  const seen = JSON.parse(readFileSync(join(ROOT, 'source', 'seen.json'), 'utf8'));
+  utahiroSeen = seen?.files?.['source/utahiro_prices.json'] ?? {};
+} catch {
+  utahiroSeen = {};
+}
 try {
   const source = existsSync(utahiroPath) ? JSON.parse(readFileSync(utahiroPath, 'utf8')) : { updated_at: 0, shops: {} };
   utahiro.updated_at = Number.isInteger(source.updated_at) ? source.updated_at : 0;
-  const { shops, reasons } = convertUtahiroShops(source.shops, todayJst());
+  const { shops, reasons } = convertUtahiroShops(source.shops, todayJst(), utahiroSeen);
   for (const [id, converted] of Object.entries(shops)) {
     const odd = implausiblePrice(converted);
     if (odd) {

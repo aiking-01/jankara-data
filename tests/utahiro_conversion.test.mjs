@@ -1,16 +1,23 @@
 // 歌広場の変換器（scripts/web/utahiro.js）。tests/fixtures/utahiro_prices.json は 2026-11-26 に保存した店のページを
 // scripts/update_utahiro_prices.py で読んだもの（料金表・営業時間・告知の文字だけ）
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import {
-  convertUtahiro, convertUtahiroShops, dayOf, noticePeriods, overlapsHorizon, parseUtahiroHours, todayJst,
+  checkedAfter, convertUtahiro, convertUtahiroShops, dayOf, noticePeriods, notOver, parseUtahiroHours, todayJst,
 } from '../scripts/web/utahiro.js';
 
 const fixture = JSON.parse(readFileSync(new URL('./fixtures/utahiro_prices.json', import.meta.url), 'utf8'));
 const shops = fixture.shops;
 const copy = (value) => JSON.parse(JSON.stringify(value));
 const AFTER_NOTICES = '2027-01-15'; // 年末年始の料金変更（～1/8）が終わった後
+const at = (text) => Math.floor(Date.parse(text) / 1000);
+// 期間が終わった後に取り直して、同じページだった（select_changes.py が元データを戻し、seen.json だけが進んだ）
+const RECHECKED = Object.fromEntries(Object.keys(shops).map((id) => [id, at('2027-01-12T04:10:00+09:00')]));
 const planOf = (converted, band, hours) => converted.regular.find((table) => table.band === band)
   .plans.find((plan) => plan.hours === hours);
 
@@ -20,8 +27,15 @@ test('今の告知（12/1 または 12/4 から 1/8 まで、一部料金を変�
   assert.deepEqual(reasons['notice-period'].sort(), Object.keys(shops).sort());
 });
 
-test('告知の期間が終われば、読める形の店だけを出す', () => {
-  const { shops: converted, reasons } = convertUtahiroShops(shops, AFTER_NOTICES);
+test('始まる日が先でも、終わっていない告知の期間がある店は出さない（アプリは何日先の入店日でも選べる）', () => {
+  // 11/7 は 12/1・12/4 からの期間の 3 週間以上前。配ると 12/20 の入店にも通常料金が出てしまう
+  const { shops: converted, reasons } = convertUtahiroShops(shops, '2026-11-07');
+  assert.deepEqual(converted, {});
+  assert.deepEqual(reasons['notice-period'].sort(), Object.keys(shops).sort());
+});
+
+test('告知の期間が終わり、終わった後に確かめた店のうち、読める形の店だけを出す', () => {
+  const { shops: converted, reasons } = convertUtahiroShops(shops, AFTER_NOTICES, RECHECKED);
   assert.deepEqual(Object.keys(converted).sort(), ['uh-1', 'uh-113', 'uh-139', 'uh-143', 'uh-205', 'uh-94']);
   assert.deepEqual(reasons['24h-open-close'], ['uh-130']); // 24時間営業なのに OPEN~18:00 / 18:00~CLOSE
   assert.deepEqual(reasons['notice-period'], ['uh-133']); // 「12月18日から営業時間を変更」は終わりがない
@@ -131,19 +145,47 @@ test('告知は年月日と曜日のある決まった形だけを読む。～ �
   }
 });
 
-test('告知の期間は、変換する日から 21 日先までの滞在（前の日の夜と最後の日の翌朝を含む）と重なれば出さない', () => {
+test('告知の期間は、始まる日に関係なく、最後の日の翌日（最後の日の夜から翌朝の滞在）まで終わっていないとみなす', () => {
   const today = dayOf('2026-11-26');
   const period = (from, to) => ({ from: dayOf(from), to: dayOf(to) });
-  assert.equal(overlapsHorizon(period('2026-12-18', '2027-01-08'), today), true); // 21 日後の夜から翌朝にかかる
-  assert.equal(overlapsHorizon(period('2026-12-19', '2027-01-08'), today), false);
-  assert.equal(overlapsHorizon(period('2026-11-01', '2026-11-25'), today), true); // 昨夜からの滞在
-  assert.equal(overlapsHorizon(period('2026-11-01', '2026-11-24'), today), false);
-  assert.equal(overlapsHorizon({ from: dayOf('2026-12-18'), to: Infinity }, today), true);
-  // 店の変換でも同じ。12/19 からの料金変更は 11/26 には出す、11/27 には出さない
+  assert.equal(notOver(period('2027-03-01', '2027-03-31'), today), true); // 3 か月先から
+  assert.equal(notOver(period('2026-11-01', '2026-11-25'), today), true); // 昨夜からの滞在
+  assert.equal(notOver(period('2026-11-01', '2026-11-24'), today), false);
+  assert.equal(notOver({ from: dayOf('2027-06-01'), to: Infinity }, today), true);
+  // 店の変換でも同じ。3 か月先からの料金変更も、終わりのない営業時間の変更も、今から出さない
+  for (const notice of ['2027年3月1日(月)～2027年3月31日(水)まで、一部料金を変更させていただきます。',
+    '2027年6月1日(火)から営業時間を11時～翌5時へ変更いたします。']) {
+    const record = { ...copy(shops['uh-1']), notices: [notice] };
+    assert.deepEqual(convertUtahiroShops({ 'uh-1': record }, '2026-11-26').reasons, { 'notice-period': ['uh-1'] }, notice);
+  }
+});
+
+test('期間が終わっても、終わった後に確かめた記録になるまで出さない（期間中に取った表かもしれない）', () => {
+  const period = { from: dayOf('2026-12-04'), to: dayOf('2027-01-08') };
+  assert.equal(checkedAfter(period, at('2027-01-10T00:00:00+09:00')), true); // 最後の日の 2 日後の JST 0 時から
+  assert.equal(checkedAfter(period, at('2027-01-09T23:59:59+09:00')), false);
+  // 期間中（1/6）に取った記録。期間中の表に書き換わっていたとしても、期間の後にそのまま配らない
   const record = copy(shops['uh-1']);
-  record.notices = ['2026年12月19日(土)～2027年1月8日(金)まで、一部料金を変更させていただきます。'];
-  assert.deepEqual(Object.keys(convertUtahiroShops({ 'uh-1': record }, '2026-11-26').shops), ['uh-1']);
-  assert.deepEqual(convertUtahiroShops({ 'uh-1': record }, '2026-11-27').reasons, { 'notice-period': ['uh-1'] });
+  record.checked_at = at('2027-01-06T04:00:00+09:00');
+  const slot = record.bands[0].courses[0].tables[0];
+  slot.rows = slot.rows.map((row) => [row[0], '300', '400']);
+  assert.deepEqual(convertUtahiroShops({ 'uh-1': record }, '2027-01-09').reasons, { 'notice-period': ['uh-1'] });
+  for (const day of ['2027-01-10', '2027-01-11', '2027-02-20']) {
+    assert.deepEqual(convertUtahiroShops({ 'uh-1': record }, day).reasons, { 'notice-recheck': ['uh-1'] }, day);
+  }
+  // 1/9 の朝に取り直しても、まだ足りない
+  assert.deepEqual(convertUtahiroShops({ 'uh-1': record }, '2027-01-11', { 'uh-1': at('2027-01-09T04:10:00+09:00') }).reasons,
+    { 'notice-recheck': ['uh-1'] });
+  // 期間の後に取り直して同じページだった（seen.json だけが進んだ）、または取り直した記録なら出す
+  assert.deepEqual(Object.keys(convertUtahiroShops({ 'uh-1': record }, '2027-01-11',
+    { 'uh-1': at('2027-01-10T04:10:00+09:00') }).shops), ['uh-1']);
+  record.checked_at = at('2027-01-10T04:10:00+09:00');
+  assert.deepEqual(Object.keys(convertUtahiroShops({ 'uh-1': record }, '2027-01-11').shops), ['uh-1']);
+  // 期間の前に取った記録でも、期間が終わった後に確かめるまでは出さない（前もって表を書き換えるかもしれない）
+  assert.deepEqual(convertUtahiroShops({ 'uh-1': shops['uh-1'] }, AFTER_NOTICES).reasons, { 'notice-recheck': ['uh-1'] });
+  // 壊れた日時は使わない
+  assert.deepEqual(convertUtahiroShops({ 'uh-1': shops['uh-1'] }, AFTER_NOTICES, { 'uh-1': '2027-01-12' }).reasons,
+    { 'notice-recheck': ['uh-1'] });
 });
 
 test('読めない告知のある店は出さない', () => {
@@ -160,6 +202,9 @@ test('ほかの店で見つかった料金変更は、その告知を見たよ�
   const result = convertUtahiroShops({ 'uh-205': seen, 'uh-1': older, 'uh-94': newer }, AFTER_NOTICES);
   assert.deepEqual(result.reasons, { 'notice-period': ['uh-205'], 'notice-other-shop': ['uh-1'] });
   assert.deepEqual(Object.keys(result.shops), ['uh-94']);
+  // その後に取り直して告知がなかった（同じページなので seen.json だけが進んだ）店は出す
+  assert.deepEqual(Object.keys(convertUtahiroShops({ 'uh-205': seen, 'uh-1': older }, AFTER_NOTICES, { 'uh-1': 2500 }).shops),
+    ['uh-1']);
   // 営業時間の変更は店ごとのことなので、ほかの店には当てない
   seen.notices = ['2027年1月20日(水)～2027年1月31日(日)の期間中はオープン時間を10時へ変更いたします。'];
   assert.deepEqual(Object.keys(convertUtahiroShops({ 'uh-205': seen, 'uh-1': older }, AFTER_NOTICES).shops), ['uh-1']);
@@ -170,7 +215,13 @@ test('知らない形が 1 つでもあれば店ごと出さない', () => {
     ['extras', (r) => { r.extras = ['orphan_row: ["一般","500","600"]']; }],
     ['extras', (r) => { r.extras = ['hidden: ible-block db-menu-tab']; }],
     ['tax', (r) => { r.tail = ['ソフトドリンク飲み放題 ドリンクバーをご利用いただけます。']; }],
-    ['extra-charge', (r) => { r.tail = ['お1人様税込料金です。\n別途ルームチャージがかかります。']; }],
+    ['tail', (r) => { r.tail = ['お1人様税込料金です。\n別途ルームチャージがかかります。']; }],
+    // 末尾に日付や条件の注記が足されたら出さない（知っている文だけを許す）
+    ...['※12月24日(木)・25日(金)は特別料金となります。', '※年末年始は料金が異なります。',
+      '※金曜日の夜は30分料金が+100円となります。', '※土日祝のフリータイムは2時間制となります。']
+      .map((line) => ['tail', (r) => { r.tail = [`${r.tail[0]}\n${line}`]; }]),
+    ['tail', (r) => { r.tail.push('※12/31は特別営業'); }],
+    ['tail', (r) => { r.tail = 'お1人様税込料金です。'; }],
     ['hours', (r) => { r.hours = '11時～翌5時'; }],
     ['band-count', (r) => { r.bands.splice(1, 1); }],
     ['unknown-band', (r) => { r.bands[2].label = '深夜パック'; }],
@@ -232,11 +283,50 @@ test('列見出しの曜日は、engine の読み方（「平日」はもう一�
   }
 });
 
+test('末尾の注記は、公式の 6 行（空白の違いは問わない）なら読む', () => {
+  const full = ['お1人様税込料金です。\nソフトドリンク飲み放題 ドリンクバーをご利用いただけます。\n'
+    + 'アルコール飲み放題 アルコールドリンクの他、ノンアルコールカクテル、 プレミアムソフトドリンク、ソフトドリンクバー約150種類が飲み放題！\n'
+    + '※混雑時、フリータイムのご利用は制限させていただく場合がございます。予めご了承ください。\nお1人様でのご利用に関して\n'
+    + '当店はお1人様でのご利用(ヒトカラ)も可能です。 ただし、ルーム数には限りがあるため、適正な収容人数のルームが空くまで'
+    + 'お待ちいただく場合や混雑時はお1人様でのご利用をご遠慮いただく場合がございます。予めご了承ください。 詳しくは店舗まで直接お問い合わせください。'];
+  for (const tail of [full, [full[0].replace(/ /g, '')], [full[0].replace('、 プ', '、\u3000プ')]]) {
+    const record = { ...copy(shops['uh-1']), tail };
+    assert.ok(convertUtahiro(record).regular, tail[0].slice(0, 40));
+  }
+});
+
 test('1 店の記録が壊れていても、ほかの店の変換を止めない', () => {
-  const result = convertUtahiroShops({ 'uh-1': shops['uh-1'], 'uh-x': null, 'uh-y': { notices: 5 } }, AFTER_NOTICES);
+  const result = convertUtahiroShops({ 'uh-1': shops['uh-1'], 'uh-x': null, 'uh-y': { notices: 5 } }, AFTER_NOTICES, RECHECKED);
   assert.deepEqual(Object.keys(result.shops), ['uh-1']);
   assert.deepEqual(result.reasons, { record: ['uh-x'], 'notice-unknown': ['uh-y'] });
   assert.throws(() => convertUtahiroShops({}, '2026/11/26'), /変換する日/);
+});
+
+test('convert.mjs は seen.json の最終確認日時で、期間の後に確かめたかを見る（読めなければ出さない側）', () => {
+  // scripts/ を一時ディレクトリに写し、元データは fixtures と空のファイルだけで変換する
+  const root = mkdtempSync(join(tmpdir(), 'utahiro-convert-'));
+  try {
+    cpSync(fileURLToPath(new URL('../scripts', import.meta.url)), join(root, 'scripts'), { recursive: true });
+    mkdirSync(join(root, 'source'));
+    for (const name of ['cotedazur_prices', 'joysound_prices', 'chain_prices', 'maneki_prices', 'megabig_prices', 'ocr',
+      'joyjoy_prices']) {
+      writeFileSync(join(root, 'source', `${name}.json`), JSON.stringify({ updated_at: 0, shops: {} }));
+    }
+    writeFileSync(join(root, 'source', 'utahiro_prices.json'), JSON.stringify(fixture));
+    const run = (seen) => {
+      if (seen === undefined) rmSync(join(root, 'source', 'seen.json'), { force: true });
+      else writeFileSync(join(root, 'source', 'seen.json'), seen);
+      execFileSync(process.execPath, [join(root, 'scripts', 'convert.mjs')],
+        { env: { ...process.env, CONVERT_TODAY: AFTER_NOTICES }, stdio: 'pipe' });
+      return Object.keys(JSON.parse(readFileSync(join(root, 'build', 'utahiro.json'), 'utf8')).shops).sort();
+    };
+    const seen = JSON.stringify({ schema_version: 1, files: { 'source/utahiro_prices.json': RECHECKED }, tried: {}, lists: {} });
+    assert.deepEqual(run(seen), ['uh-1', 'uh-113', 'uh-139', 'uh-143', 'uh-205', 'uh-94']);
+    assert.deepEqual(run(undefined), []);
+    assert.deepEqual(run('{'), []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('変換する日は JST。CONVERT_TODAY で差し替えられる', () => {
