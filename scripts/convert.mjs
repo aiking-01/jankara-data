@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { convertBigEcho } from './web/bigecho.js';
 import { convertManeki } from './web/maneki.js';
-import { convertMegabig } from './web/megabig.js';
+import { convertMegabig, reportMegabig } from './web/megabig.js';
 import { convertKanOcr } from './web/ocr.js';
 import { convertCotedazurShops } from './web/cotedazur.js';
 import { convertJoysound } from './web/joysound.js';
@@ -17,7 +17,8 @@ const TARGETS = {
   joysound: ['joysound_prices.json', (shop) => convertJoysound(shop.sections, shop.opening_hours)],
   bigecho: ['chain_prices.json', (shop) => convertBigEcho(shop.sections, shop.hours)],
   maneki: ['maneki_prices.json', (shop) => convertManeki(shop.tables)],
-  megabig: ['megabig_prices.json', (shop) => convertMegabig(shop.sections, shop.hours)],
+  // メガビッグは表の外の告知・リンク・読めなかった表も渡す。変換する日は CONVERT_TODAY（YYYY-MM-DD）で差し替えられる
+  megabig: ['megabig_prices.json', (shop) => reportMegabig(shop.page, convertMegabig(shop.sections, shop.hours, shop))],
   kan: ['ocr.json', (shop) => (shop.chain === 'カラオケ館' ? convertKanOcr(shop.reads) : { reason: 'other-chain' })],
 };
 
