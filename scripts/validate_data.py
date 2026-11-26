@@ -338,7 +338,20 @@ def _bigecho_raw(item, old, key, issues):
     if not isinstance(sections, list):
         issues.append(f"{key}: sections が配列ではありません")
         return
-    if old and old.get("sections") and len(sections) < len(old["sections"]) * 0.6:
+    notes = item.get("price_notes")
+    if notes is not None and (not isinstance(notes, list) or any(not isinstance(note, str) for note in notes)):
+        issues.append(f"{key}: 料金欄の見出しの形が不正")
+        notes = None
+    if not isinstance(item.get("notice", ""), str):
+        issues.append(f"{key}: 店舗からのお知らせの形が不正")
+    short = item.get("short")
+    if short is not None and (not isinstance(short, str) or not re.fullmatch(r"https://big-echo\.jp/\?p=\d+", short)):
+        issues.append(f"{key}: 店舗の短縮 URL が異常")
+    # 表が減った店。取得スクリプトが店舗ページだと確かめたうえで、表を外して特別料金の見出しなどに替えた店
+    # （price_notes に文がある）や、料金欄ごと表がなくなった店は、変換が金額を出さないので異常にしない。
+    # 修復で外すと、翌日から毎回取り直す店になってしまう
+    explained = notes is not None and (not sections or bool(notes))
+    if old and old.get("sections") and len(sections) < len(old["sections"]) * 0.6 and not explained:
         issues.append(f"{key}: ビッグエコーの料金表が大量欠落")
     for i, section in enumerate(sections):
         if not isinstance(section, dict):
