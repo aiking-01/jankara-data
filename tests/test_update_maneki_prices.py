@@ -386,9 +386,10 @@ class SinceTest(unittest.TestCase):
         shops = {f"mn-{i}": {"tables": [["30分"]], "checked_at": 1000 + i} for i in range(80)}
         shops["mn-0"]["extract"] = maneki.EXTRACT
         shops["mn-60"]["tables"] = shops["mn-1"]["tables"] = []  # 文字のない PDF の店は後回し
-        chosen = maneki.backfill(pages, shops, {"files": {}, "tried": {}, "lists": {}})
-        self.assertEqual(len(chosen), maneki.BACKFILL)
-        self.assertEqual(chosen, {f"mn-{i}" for i in range(2, maneki.BACKFILL + 2)})
+        with mock.patch.object(maneki, "BACKFILL", 50):  # 見本の 80 店より少ない上限で、選ぶ順を確かめる
+            chosen = maneki.backfill(pages, shops, {"files": {}, "tried": {}, "lists": {}})
+        self.assertEqual(len(chosen), 50)
+        self.assertEqual(chosen, {f"mn-{i}" for i in range(2, 52)})
 
 
 class UpdateTest(Base):

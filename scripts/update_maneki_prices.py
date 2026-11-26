@@ -60,7 +60,7 @@ USER_AGENT = update_chains.USER_AGENT
 SCHEMA_VERSION = 1
 # 取り出しの版。告知と各ページの統計を残すようにしたので 2。web/maneki.js の EXTRACT_VERSION と同じ値にする
 EXTRACT = 2
-BACKFILL = 50
+BACKFILL = 100  # 1 回で約 130MB。読める約 500 店が 5 日ほどで戻る（総量は同じで、日数だけが変わる）
 # 3 日ごとの巡回の 3 回に 1 回（9 日ごと）。開始時刻のずれがあっても 9 日目に確かめるよう、9 日より少し短くする。
 # publish.py の 14 日の取り下げより短い
 PDF_RECHECK = 8 * 86400
