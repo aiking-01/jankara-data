@@ -8,7 +8,9 @@
 verified_at に移す（画像が読んだものと同じなら verified_at を進める）。scripts/web/ocr.js は、画像が変わったのに
 まだ読めていない店と、14 日確かめられていない店を配らない。
 - 通信の失敗（タイムアウト、接続エラー、本文の欠け、5xx など）の店は書かない。前回の記録が残り、14 日で配られなくなる
-- 画像がもうない（404・410）か画像でない応答は、その日のうちに料金なしにする（読んだ画像と一致しない印を書く）
+- 画像がもうない（404・410）か画像でない応答は、その日のうちに料金なしにする（読んだ画像と一致しない印を書く）。
+  ただし、それが 1 回の実行で多い（続けて 5 店、または取った店の 1 割を超えて 5 店以上）ときは、サイトの作り替えや
+  200 で返る遮断のページとみなして通信の失敗と同じに扱い、その回の印は書かず、残りの画像も取らない
 - 403・429・503 は断られているので、そのサイトの残りの画像は取らない（公式サイトに負担を掛けない）
 - 確かめてから 2 日たっていない店は取らない（3 日に 1 回の定期実行の間に手で動かしても、取り直さない）
 - CRAWL_DEADLINE を過ぎたら残りは取らず、取れた分で続ける
@@ -44,6 +46,10 @@ TWICE = {"no-text", "covered-number"}
 GONE = {404, 410}
 # 断られているとき。残りの画像も取らない
 REFUSED = {403, 429, 503}
+# 画像がない・画像でない応答がこれだけ続くか、取った店の GONE_SHARE を超えてこれ以上あれば、サイト全体の異常とみなす。
+# 1 回の異常で全店の印を書くと館が 0 店になり、配信から一度に消えるため（閉店した店は店舗一覧から外れるので、ふだんはまれ）
+MASS_GONE = 5
+GONE_SHARE = 0.10
 # 確かめてからこの秒数がたっていない店は取らない（定期実行は 3 日に 1 回。開始時刻のずれを見込んで 2 日）
 MIN_AGE = 2 * 86400
 
@@ -174,6 +180,7 @@ def main() -> None:
         maneki = []
     now = time.time()
     refused = set()  # 断られたサイト。残りの画像は取らない
+    gone, streak, site_down = [], 0, False  # 画像がない・画像でない応答の店、その続いた数、サイト全体の異常か
     try:
         for target in maneki + kan_targets():
             if target["key"] and stored.get(target["id"], {}).get("key") == target["key"]:
@@ -186,7 +193,17 @@ def main() -> None:
                 continue
             try:
                 if target["chain"] == "カラオケ館":
-                    if not check_kan(fetcher, target, stored, checks, work):
+                    chosen_now = check_kan(fetcher, target, stored, checks, work)
+                    if checks.get(target["id"], {}).get("key") in ("missing", "not-image"):
+                        gone.append(target["id"])
+                        streak += 1
+                        if streak >= MASS_GONE:
+                            site_down = True
+                            refused.add(host)
+                            print(f"::warning::{host} の画像がない・画像でない応答が {streak} 店続いたので、残りは取りません", flush=True)
+                    else:
+                        streak = 0
+                    if not chosen_now:
                         continue
                 else:
                     data = fetch(fetcher, target["url"], pdf=True)
@@ -212,6 +229,12 @@ def main() -> None:
             chosen.append(target)
     except net.OutOfTime:
         print("::warning::締め切りを過ぎたので、残りの画像は取らずに、取れた分で続けます", flush=True)
+    kan_checked = sum(1 for key in checks if key.startswith("kan-"))
+    if gone and (site_down or (len(gone) >= MASS_GONE and len(gone) > kan_checked * GONE_SHARE)):
+        # サイト全体の異常。通信の失敗と同じく前回の記録を残す（確かめた日時は進まないので、14 日で配らなくなる）
+        for key in gone:
+            checks.pop(key, None)
+        print(f"::warning::画像がない・画像でない応答が {len(gone)} 店あり、サイト全体の異常とみなして、この回の印は書きません", flush=True)
     (work / "targets.json").write_text(json.dumps(chosen, ensure_ascii=False), encoding="utf-8")
     (work / "kan_checks.json").write_text(json.dumps(checks, ensure_ascii=False, sort_keys=True), encoding="utf-8")
     reads = sum(target["reads"] for target in chosen)

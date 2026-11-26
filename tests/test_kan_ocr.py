@@ -134,6 +134,46 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(checks["kan-1"]["key"], key)
 
 
+    def run_main(self, answers, stored=None):
+        """館の店 kan-1.. に answers を順に返して plan.main を動かし、取った URL の数と kan_checks.json を返す"""
+        targets = [dict(TARGET, id=f"kan-{n}", url=f"https://karaokekan.net/shop2price/image/{n}/0")
+                   for n in range(1, len(answers) + 1)]
+        results = iter(answers)
+        asked = []
+
+        class Fetcher:
+            bytes = 0
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def get(self, url, **kwargs):
+                asked.append(url)
+                return next(results)
+
+        with mock.patch.object(plan, "maneki_targets", return_value=[]),                 mock.patch.object(plan, "kan_targets", return_value=targets),                 mock.patch.object(plan, "load_stored", return_value=stored or {}),                 mock.patch.object(plan.net, "Fetcher", Fetcher),                 mock.patch.object(sys, "argv", ["plan.py", str(self.work)]):
+            plan.main()
+        return len(asked), json.loads((self.work / "kan_checks.json").read_text(encoding="utf-8"))
+
+    def test_a_few_missing_images_remove_only_those_shops(self):
+        answers = [response(jpeg())] * 20 + [response(b"", 404)] + [response(jpeg())] * 9
+        asked, checks = self.run_main(answers)
+        self.assertEqual(asked, 30)
+        self.assertEqual(checks["kan-21"]["key"], "missing")
+        self.assertEqual(len(checks), 30)
+
+    def test_many_missing_or_non_image_answers_are_treated_as_a_site_failure(self):
+        # 200 で返る遮断のページが続いたら、残りは取らず、この回の印も書かない（全店が一度に配られなくならない）
+        page = response(b"<html><body>blocked</body></html>")
+        asked, checks = self.run_main([response(jpeg())] * 3 + [page] * 10)
+        self.assertEqual(asked, 3 + plan.MASS_GONE)
+        self.assertEqual(sorted(checks), ["kan-1", "kan-2", "kan-3"])
+        # 続かなくても、取った店の 1 割を超えて 5 店以上なら同じ
+        answers = [response(jpeg()), response(b"", 404)] * 6
+        asked, checks = self.run_main(answers)
+        self.assertEqual(asked, 12)
+        self.assertEqual(set(checks), {f"kan-{n}" for n in range(1, 13, 2)})
+
 class MergeTests(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
