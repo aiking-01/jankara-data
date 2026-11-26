@@ -253,6 +253,13 @@ test('カラオケ館: 画像の説明（img の alt）の文も読み、ソフ�
   // セルのタグ自身に書かれた説明も読む。セルは消さない（列がずれて別の列の金額にならない）
   const titled = page(day.replace('<td>¥170</td>', `<td title="3名様で25円引">¥170</td>`), night);
   assert.equal(convertKanOcr([titled, titled]).reason, 'price-text');
+  // 表の中でセルの外（行の間）に入った画像や文字と、読み飛ばされる形の行も読まない
+  const between = page(day.replace('</tr><tr><td>土', '</tr><img alt="Soft serve ice cream cone illustration" /><tr><td>土'), night);
+  assert.equal(convertKanOcr([between, between]).reason, 'table-shape');
+  const stray = page(day.replace('<tbody>', '<tbody>3名様以上で50円引'), night);
+  assert.equal(convertKanOcr([stray, stray]).reason, 'table-shape');
+  const row = page(day.replace('<tr><td>土', '<tr class="x"><td>土'), night);
+  assert.equal(convertKanOcr([row, row]).reason, 'table-shape');
 });
 
 test('カラオケ館: 区分の欄が Object のもとからある名前でも、例外を出さずに読まない', () => {

@@ -39,6 +39,14 @@ export function tablesOf(html) {
       .map((cell) => ({ head: cell[1] === 'th', rowspan: /rowspan/.test(cell[2]), text: norm(textOf(cell[0])) }))));
 }
 
+// 表の中なのにセルの外にある文字や画像（行の間に入った画像など）と、tablesOf が読み飛ばす形の行があるか。
+// どちらも表の外の文としても読まれないので、条件や行を落とさないよう店ごと読まない
+function strayInTable(html) {
+  return [...html.matchAll(/<table>([\s\S]*?)<\/table>/g)].some(([, inner]) =>
+    norm(textOf(inner.replace(/<(th|td)(?:\s[^>]*)?>[\s\S]*?<\/t[hd]>/g, ''))) !== ''
+    || (inner.match(/<tr\b/g) ?? []).length !== (inner.match(/<tr>/g) ?? []).length);
+}
+
 const RANGE = /^(\d{1,2}:\d{2})~(\d{1,2}:\d{2})/;
 const KAN_PRICE = /^¥(\d{1,3}(?:,\d{3})?)$/;
 // 「¥50(税込¥55)」は税込の金額を使う。税込が本体の 1.1 倍と合わなければ読み違いなので読まない
@@ -354,6 +362,7 @@ function readKan(html, today) {
   if (/税[別抜]/.test(text)) return { reason: 'tax-excluded' };
   const tables = tablesOf(html);
   if (!tables.length) return { reason: 'no-table' };
+  if (strayInTable(html)) return { reason: 'table-shape' };
   const outside = outsideOf(html);
   // ドリンクバーの注文が必須の注記が表の外にあると、どの時間帯の注記か分からない
   if (REQUIRED_BAR.test(outside)) return { reason: 'required-bar' };
