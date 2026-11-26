@@ -17,11 +17,12 @@ FIXTURE = Path(__file__).resolve().parent / "fixtures" / "joyjoy_prices.json"
 
 class JoyjoyMinimumTests(unittest.TestCase):
     def test_only_explicit_from_price_is_accepted(self):
-        for text in ("￥450～", "450円～", "450〜", "¥450~"):
+        for text in ("￥450～", "¥450~", "￥ 450 ～"):
             value, original = minimum_price(text)
             self.assertEqual(value, 450)
             self.assertTrue(original)
-        for text in ("450円", "450", "450-500円", "お問い合わせ", "無料"):
+        # 「円～」や「〜」（波ダッシュ）の書き方は validate_data.py の検査が通さないので、取り込まない
+        for text in ("450円", "450", "450-500円", "お問い合わせ", "無料", "450円～", "450〜", "￥450〜"):
             with self.assertRaises(ValueError, msg=text):
                 minimum_price(text)
 

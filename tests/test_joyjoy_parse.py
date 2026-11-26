@@ -126,6 +126,24 @@ class ParseTests(unittest.TestCase):
         self.assertRejected(between_tables("※表示は税別です"), "知らない文")
         self.assertRejected(page("DAY TIME</th>", "DAY TIME（平日）</th>"), "時間帯の見出し")
 
+    def test_unknown_text_after_the_note_or_before_the_heading_is_not_taken(self):
+        # 注記の後ろに足された表や文（学生料金、税抜、会員料金）を素通りすると「最低」が誤りになる
+        note_end = "お問い合わせください。</p>"
+        student = ('<table class="price_info_list"><tr><th colspan="3">STUDENT</th></tr>'
+                   "<tr><th>学生様 30分</th><td>AM7:00～PM7:00</td><td>￥80～</td></tr></table>")
+        for extra, message in (("<p>※上記料金は税抜表示です。</p>", "後ろに知らない要素"),
+                               ("<p>※表示料金は会員様料金です。</p>", "後ろに知らない要素"),
+                               ("※DAY TIMEの料金は学生様料金です。<br>", "後ろに知らない文"),
+                               (student, "料金表の数")):
+            self.assertRejected(page(note_end, note_end + "\n" + extra), message)
+        # 4 つ目の料金表は、料金表の部分の外にあっても取り込まない
+        self.assertRejected(page(NOTICE_AREA, NOTICE_AREA + student), "料金表の数")
+        heading = '<h5 class="h5_tit01">料金表</h5>'
+        self.assertRejected(page(heading, "※表示は会員料金です\n" + heading), "前に知らない文")
+        self.assertRejected(page(heading, "<p>※表示は会員料金です</p>\n" + heading), "前に知らない要素")
+        # 地図とコメントだけなら今までどおり読む
+        self.assertTrue(u.parse_page(URL, page(note_end, note_end + "<!-- 地図 -->"), NOW)["rates"])
+
     def test_missing_or_duplicated_tables_are_not_taken(self):
         self.assertRejected(page('<h5 class="h5_tit01">料金表</h5>', "<h5>店内のご案内</h5>"), "料金表がありません")
         day, _, free = tables()
@@ -149,6 +167,12 @@ class ParseTests(unittest.TestCase):
         issues = []
         v._joyjoy(record, None, "jj-Sample-Store", issues, require_checked_at=True)
         self.assertEqual(issues, [])
+
+    def test_notice_with_a_date_and_a_price_word_counts(self):
+        # 年末・特別料金などの語がなくても、日付と料金の語があれば告知とみなす
+        record = u.parse_page(URL, with_notice("12/31～1/3は土日祝料金となります"), NOW)
+        self.assertEqual(record["notices"], [
+            {"text": "12/31~1/3は土日祝料金となります", "from": "2026-12-31", "until": "2027-01-03"}])
 
     def test_notices_outside_the_shop_section_are_ignored(self):
         # クーポン・スタッフ募集（年末年始手当、時給）・コメント・スクリプトは全店共通や料金と関係ない文
@@ -181,6 +205,21 @@ class NoticePeriodTests(unittest.TestCase):
         self.assertEqual(self.period("12月下旬～1月上旬は特別料金"), (None, None))
 
 
+    def test_partly_written_dates_are_not_read_as_one_day(self):
+        # 2 つ目からの日付を省いた並びは、1 日だけと読まず、終わりの日付なし（配らない）にする
+        for text in ("12/30・31は年末特別料金となります", "12月30日・31日は特別料金となります",
+                     "12/28(日)・29(月)・30(火)・31(水)は年末料金", "12/24・25はクリスマス特別料金",
+                     "12/31、1/1～3は特別料金", "12/30～31日は特別料金"):
+            self.assertEqual(self.period(text)[1], None, text)
+        # 掲載日だけがある告知や、期間の語がある告知も、終わりの日付なし
+        self.assertEqual(self.period("【12/1更新】年末年始は特別料金となります"), ("2026-12-01", None))
+        self.assertEqual(self.period("12/31は年末特別料金"), ("2026-12-31", None))
+        # 1 日だけとはっきり書いた告知はその 1 日
+        self.assertEqual(self.period("12/24のみ特別料金"), ("2026-12-24", "2026-12-24"))
+        # 料金や時間の数字は日付の残りに数えない
+        self.assertEqual(self.period("12/28～1/4は30分100円増しの特別料金"), ("2026-12-28", "2027-01-04"))
+
+
 class Response:
     def __init__(self, status=200, text="", url=URL):
         self.status_code, self.text, self.url = status, text, url
@@ -194,7 +233,8 @@ class Fetcher:
 
     def get(self, url, *, html=False, **_):
         self.calls.append(url)
-        outcome = self.plan[url]
+        # 予定にない店は通信の失敗として扱う（前回の記録が残る）
+        outcome = self.plan.get(url, requests.ConnectTimeout("予定にない店"))
         if isinstance(outcome, BaseException):
             raise outcome
         return outcome
@@ -217,7 +257,10 @@ class UpdateTests(unittest.TestCase):
                                          "shops": self.previous}, ensure_ascii=False), encoding="utf-8")
         chains = {f"jj-{name}": {"id": f"jj-{name}", "chain": "JOYJOY", "url": shop_url(name)} for name in self.NAMES}
         chains["be-1"] = {"id": "be-1", "chain": "ビッグエコー", "url": "https://shop.big-echo.jp/"}
+        # 隔離の記録も一時ファイルだけを読む（コミット済みの source/ は読まない）
+        self.quarantine = Path(self.temp.name) / "quarantine.json"
         for patch in (mock.patch.object(u, "DATA_FILE", self.data),
+                      mock.patch.object(u, "QUARANTINE_FILE", self.quarantine),
                       mock.patch.object(u.update_chains, "load_previous", return_value=chains),
                       mock.patch.object(u.crawl_plan, "due", lambda ids, *args, **kwargs: list(ids))):
             patch.start()
@@ -290,6 +333,94 @@ class UpdateTests(unittest.TestCase):
         result, saved, _, _ = self.run_update({name: Response(text=broken, url=shop_url(name)) for name in self.NAMES})
         self.assertTrue(result)
         self.assertTrue(all(shop["rates"] == [] for shop in saved["shops"].values()))
+
+    def test_redirect_to_another_host_is_priceless(self):
+        # 別のホスト（メンテナンスのページなど）でも、ページの応答は取れているので前回の最低価格を残さない
+        _, saved, _, _ = self.run_update({"A": Response(text=PAGE, url="https://joyjoy.co.jp/store/view/A")})
+        self.assertEqual(saved["shops"]["jj-A"]["rates"], [])
+        self.assertIn("公式サイト以外", saved["shops"]["jj-A"]["withdrawn"])
+
+    def test_network_failures_in_a_row_stop_the_rest(self):
+        plan = {name: requests.ConnectionError("refused") for name in self.NAMES}
+        result, saved, logs, fetcher = self.run_update(plan)
+        self.assertFalse(result)
+        self.assertEqual(len(fetcher.calls), u.FAILURES_IN_A_ROW)
+        self.assertEqual(saved["shops"], self.previous)
+        self.assertTrue(any("続いた" in line for line in logs))
+
+    def test_fetcher_reads_again_at_most_once(self):
+        # 通信の失敗の取り直しは crawl_plan.py の間隔に任せ、その場では 1 店 2 回までしか送らない
+        made = []
+
+        def make(*args, **kwargs):
+            made.append(kwargs)
+            return Fetcher({shop_url(name): Response(text=PAGE, url=shop_url(name)) for name in self.NAMES})
+
+        with mock.patch.object(u.net, "Fetcher", make):
+            u.update(log=lambda line: None, pause=self.pauses.append)
+        self.assertLessEqual(made[0]["attempts"], 2)
+
+    def test_many_closed_shops_are_removed_without_fetching(self):
+        # 店の一覧から 3 店以上（5% 以上）が外れた日は、元データが丸ごと前回に戻されるので、取らずに外すだけにする
+        closed = {f"jj-Z{index}": {**self.previous["jj-A"], "page": shop_url(f"Z{index}")} for index in range(3)}
+        self.data.write_text(json.dumps({"schema_version": 1, "updated_at": NOW - 5 * 86400,
+                                         "shops": {**self.previous, **closed}}, ensure_ascii=False), encoding="utf-8")
+        broken = Response(text=page("30分</th>", "60分</th>"), url=shop_url("A"))
+        result, saved, logs, fetcher = self.run_update({"A": broken})
+        self.assertTrue(result)
+        self.assertEqual(fetcher.calls, [])
+        self.assertEqual(saved["shops"], self.previous)
+        self.assertTrue(any("外れた" in line for line in logs))
+        # 2 店までなら今までどおり取る
+        self.data.write_text(json.dumps({"schema_version": 1, "updated_at": NOW - 5 * 86400,
+                                         "shops": {**self.previous, "jj-Z0": closed["jj-Z0"]}}, ensure_ascii=False),
+                             encoding="utf-8")
+        _, saved, _, fetcher = self.run_update({name: Response(text=PAGE, url=shop_url(name)) for name in self.NAMES})
+        self.assertEqual(len(fetcher.calls), 6)
+        self.assertNotIn("jj-Z0", saved["shops"])
+
+    def test_sudden_change_is_held_once_and_accepted_when_read_again(self):
+        doubled = Response(text=page("￥295～", "￥600～"), url=shop_url("A"))
+        _, saved, logs, _ = self.run_update({"A": doubled})
+        held = saved["shops"]["jj-A"]
+        self.assertEqual(held["rates"], [])
+        self.assertIn("急に変わった", held["withdrawn"])
+        issues = []
+        v._joyjoy(held, self.previous["jj-A"], "jj-A", issues, require_checked_at=True)
+        self.assertEqual(issues, [])
+        # 次に取ったときも同じ値なら、人が確かめなくても受け入れる
+        _, saved, _, _ = self.run_update({"A": doubled})
+        accepted = saved["shops"]["jj-A"]
+        self.assertEqual(accepted["rates"][1]["windows"][0]["minimum_yen"], 600)
+        issues = []
+        v._joyjoy(accepted, held, "jj-A", issues, require_checked_at=True)
+        self.assertEqual(issues, [])
+        # 料金なしの記録の後に、前回と比べて急に変わった値が出ても、1 度は出さない
+        self.run_update({"A": Response(text=page('<h5 class="h5_tit01">料金表</h5>', ""), url=shop_url("A"))})
+        _, saved, _, _ = self.run_update({"A": Response(text=page("￥295～", "￥120～"), url=shop_url("A"))})
+        self.assertEqual(saved["shops"]["jj-A"]["rates"], [])
+        # ふつうの値上げはそのまま受け入れる
+        _, saved, _, _ = self.run_update({"B": Response(text=page("￥295～", "￥320～"), url=shop_url("B"))})
+        self.assertEqual(saved["shops"]["jj-B"]["rates"][1]["windows"][0]["minimum_yen"], 320)
+
+    def test_shop_left_out_by_the_data_check_follows_the_crawl_interval(self):
+        # 検査で外された店は、隔離された記録と比べ、隔離された記録の確認日時で巡回の間隔を決める（毎日は取らない）
+        shops = {key: value for key, value in self.previous.items() if key != "jj-A"}
+        self.data.write_text(json.dumps({"schema_version": 1, "updated_at": NOW - 5 * 86400, "shops": shops},
+                                        ensure_ascii=False), encoding="utf-8")
+        self.quarantine.write_text(json.dumps({"schema_version": 1, "sources": {"joyjoy_prices": {
+            "jj-A": self.previous["jj-A"]}}}, ensure_ascii=False), encoding="utf-8")
+        seen = {}
+
+        def due(ids, record, source, now, *, force):
+            seen.update(record=record("jj-A"), force=force("jj-A"), new=force("jj-B"))
+            return list(ids)
+
+        with mock.patch.object(u.crawl_plan, "due", due):
+            _, saved, _, _ = self.run_update({name: Response(text=page("￥295～", "￥600～"), url=shop_url(name))
+                                              for name in self.NAMES})
+        self.assertEqual(seen, {"record": self.previous["jj-A"], "force": False, "new": False})
+        self.assertEqual(saved["shops"]["jj-A"]["rates"], [])  # 隔離された記録と比べて急に変わった
 
 
 class DataCheckTests(unittest.TestCase):
