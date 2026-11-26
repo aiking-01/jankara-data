@@ -791,6 +791,10 @@ def _utahiro_built(item, key, issues):
         issues.append(f"{key}: 営業時間（week）が不正")
 
 
+# カラオケ館の今の画像の印（ocr/plan.py）。sha256 か、画像がないときの印
+KAN_LATEST_KEY = re.compile(r"[0-9a-f]{64}|missing|not-image")
+
+
 def _ocr(item, old, key, issues):
     if item.get("chain") not in ("カラオケ館", "まねきねこ"):
         issues.append(f"{key}: OCR チェーンが不正")
@@ -809,6 +813,13 @@ def _ocr(item, old, key, issues):
     if url and (urlsplit(url).scheme != "https" or urlsplit(url).hostname not in (
         "karaokekan.net", "karaokekan.jp", "www.karaokemanekineko.jp")):
         issues.append(f"{key}: OCR 取得元 URL が不正")
+    # カラオケ館の最後に取れた画像の印と、それが読んだ画像と同じだと確かめた時刻（ocr/merge.py が書く）
+    latest = item.get("latest_key")
+    if latest is not None and (not isinstance(latest, str) or not KAN_LATEST_KEY.fullmatch(latest)):
+        issues.append(f"{key}: OCR の今の画像の印が不正")
+    verified = item.get("verified_at")
+    if verified is not None and (type(verified) is not int or verified <= 0):
+        issues.append(f"{key}: OCR の画像を確かめた時刻が不正")
 
 
 def _generated(item, old, key, issues):

@@ -6,6 +6,8 @@ import { convertBigEcho } from './web/bigecho.js';
 import { convertManeki } from './web/maneki.js';
 import { convertMegabig, reportMegabig } from './web/megabig.js';
 import { convertKanOcr } from './web/ocr.js';
+import { convertMegabig } from './web/megabig.js';
+import { convertKanShop } from './web/ocr.js';
 import { convertCotedazurShops } from './web/cotedazur.js';
 import { convertJoysound } from './web/joysound.js';
 import { convertUtahiroShops, todayJst } from './web/utahiro.js';
@@ -29,6 +31,18 @@ const TARGETS = {
   // メガビッグは表の外の告知・リンク・読めなかった表も渡す。変換する日は CONVERT_TODAY（YYYY-MM-DD）で差し替えられる
   megabig: ['megabig_prices.json', (shop) => reportMegabig(shop.page, convertMegabig(shop.sections, shop.hours, shop))],
   kan: ['ocr.json', (shop) => (shop.chain === 'カラオケ館' ? convertKanOcr(shop.reads) : { reason: 'other-chain' })],
+  megabig: ['megabig_prices.json', (shop) => convertMegabig(shop.sections, shop.hours)],
+  // 画像が変わったのに読めていない店と、14 日画像を確かめていない店は外す（ocr.js の convertKanShop）。
+  // 1 店の読み取りで思わぬ例外が出ても、その店を配らないだけにして、ほかの店とほかのチェーンの変換は止めない
+  kan: ['ocr.json', (shop) => {
+    if (shop.chain !== 'カラオケ館') return { reason: 'other-chain' };
+    try {
+      return convertKanShop(shop);
+    } catch (error) {
+      console.warn(`::warning::kan: ${shop.url ?? ''} を変換できないので配りません (${error?.message ?? error})`);
+      return { reason: 'error' };
+    }
+  }],
 };
 
 function isEmpty(value) {
