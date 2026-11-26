@@ -202,19 +202,24 @@ test('カラオケ館: 「学生|会員|学生|会員」の夜の表は、2 つ�
 
 const notice = (text) => `<div data-label="Text"><p>${text}</p></div>`;
 
-test('カラオケ館: 期間の告知は、今日から 21 日先までと期間が重なれば読まない（年をまたぐ期間も）', () => {
+test('カラオケ館: 期間の告知は、期間がすべて終わるまで読まない（何か月先の期間も、年をまたぐ期間も）', () => {
   const newYear = '★年末年始(12/28~1/4)は土・日・祝料金となります。';
-  assert.equal(withoutPeriods(newYear, '2026-11-26'), '');
+  // アプリの日付選びには上限がないので、22 日以上先の期間でも読まない（12/29 に平日の金額を出さない）
+  assert.equal(withoutPeriods(newYear, '2026-11-26'), null);
   assert.equal(withoutPeriods(newYear, '2026-12-08'), null);
   assert.equal(withoutPeriods(newYear, '2027-01-04'), null);
-  assert.equal(withoutPeriods(newYear, '2027-01-05'), '');
+  // 1/4 の夜の帯は 1/5 の朝まで続く
+  assert.equal(withoutPeriods(newYear, '2027-01-05'), null);
+  assert.equal(withoutPeriods(newYear, '2027-01-06'), '');
   const winter = '★12/1~1/5は特別料金となります。';
   assert.equal(withoutPeriods(winter, '2026-11-26'), null);
   assert.equal(withoutPeriods(winter, '2027-01-03'), null);
   assert.equal(withoutPeriods(winter, '2027-01-10'), '');
+  assert.equal(withoutPeriods('★2027年3月1日~3月31日は特別料金となります。', '2026-11-26'), null);
   // 終わりの月が省かれた期間
   assert.equal(withoutPeriods('★12月28日~31日は休日料金となります。', '2026-12-10'), null);
-  assert.equal(withoutPeriods('★12月28日~31日は休日料金となります。', '2026-11-01'), '');
+  assert.equal(withoutPeriods('★12月28日~31日は休日料金となります。', '2026-11-01'), null);
+  assert.equal(withoutPeriods('★12月28日~31日は休日料金となります。', '2027-01-02'), '');
   // 終わりの日付が読めない、ありえない日付は読まない
   assert.equal(withoutPeriods('★年末年始は特別料金となります。', '2026-11-26'), null);
   assert.equal(withoutPeriods('★2027年1月1日より料金改定となります。', '2026-11-26'), null);
@@ -222,8 +227,43 @@ test('カラオケ館: 期間の告知は、今日から 21 日先までと期�
   // 期間の告知のない文はそのまま
   assert.equal(withoutPeriods('★混雑時はご利用を制限', '2026-11-26'), '★混雑時はご利用を制限');
   const html = page(day, notice(newYear), night);
-  assert.equal(convertKanOcr([html, html], { today: '2026-11-26' }).regular[0].plans.length, 2);
+  assert.equal(convertKanOcr([html, html], { today: '2026-11-26' }).reason, 'period');
   assert.equal(convertKanOcr([html, html], { today: '2026-12-10' }).reason, 'period');
+  assert.equal(convertKanOcr([html, html], { today: '2027-01-06' }).regular[0].plans.length, 2);
+});
+
+const picture = (alt) => `<div data-label="Image"><img alt="${alt}" /></div>`;
+
+test('カラオケ館: 画像の説明（img の alt）の文も読み、ソフトクリームの挿絵のほかは店ごと読まない', () => {
+  const reads = fixture['kan-61'].reads;
+  const added = (part) => convertKanOcr(reads.map((html) => html + part), { today: TODAY });
+  // 星形の囲みの人数割引が画像の説明に書かれた読み取り。<p> の文と同じく知らない文として外す
+  assert.equal(added(picture("Starburst graphic with text '3名様以上で50円引' and '平日限定'")).reason, 'unknown-note');
+  assert.equal(added(picture("Large graphic with text '0円' (0 Yen) in red and black")).reason, 'unknown-note');
+  assert.equal(added('<div data-label="Image"><img /></div>').reason, 'unknown-note');
+  assert.equal(added(`<div title="お一人様は+¥50"></div>`).reason, 'surcharge-note');
+  // ソフトクリームの挿絵は料金に掛からない
+  assert.equal(added(picture('Soft serve ice cream cone illustration')).reason, undefined);
+  assert.equal(added(picture('Illustration of a swirl of soft-serve ice cream on a cone')).reason, undefined);
+  // 表のセルの中の画像は、挿絵でもセルの形が合わないので読まない
+  const cell = page(day.replace('<th>会員</th>', `<th>会員<img alt="Soft serve ice cream cone illustration" /></th>`), night);
+  assert.equal(convertKanOcr([cell, cell]).reason, 'customer-head');
+  const price = page(day.replace('<td>¥170</td>', `<td>¥170<img alt="3名様で25円引" /></td>`), night);
+  assert.equal(convertKanOcr([price, price]).reason, 'price-text');
+  // セルのタグ自身に書かれた説明も読む。セルは消さない（列がずれて別の列の金額にならない）
+  const titled = page(day.replace('<td>¥170</td>', `<td title="3名様で25円引">¥170</td>`), night);
+  assert.equal(convertKanOcr([titled, titled]).reason, 'price-text');
+});
+
+test('カラオケ館: 区分の欄が Object のもとからある名前でも、例外を出さずに読まない', () => {
+  for (const name of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+    const html = page(table('9:00~19:00', 'ドリンクバー付', [name, '会員', '一般'],
+      [['月~金', '¥150', '¥170', '¥226'], ['土・日・祝', '¥230', '¥280', '¥373']]), night);
+    assert.equal(convertKanOcr([html, html]).reason, 'customer-head');
+    const headless = page(`<table><tr><th>9:00~19:00</th><th>${name}</th><th>会員</th><th>一般</th></tr>`
+      + `${body([['月~金', '¥150', '¥170', '¥226']])}</table>`, night);
+    assert.ok(convertKanOcr([headless, headless]).reason);
+  }
 });
 
 const NOW = Date.UTC(2026, 10, 26, 3, 0) / 1000;

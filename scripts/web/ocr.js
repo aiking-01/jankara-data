@@ -11,8 +11,9 @@ const MAX_SLOT_PRICE = 1500;
 const DAY_SECONDS = 86400;
 // 画像が読んだものと同じだと最後に確かめてからこの日数を過ぎた店は配らない。画像が取れないまま古い金額を出し続けない
 export const STALE_DAYS = 14;
-// アプリは配信データを最長 21 日使い、利用者は先の日付も選べる。期間の告知はこの範囲と重なるかで判定する
-export const HORIZON_DAYS = 21;
+// アプリの日付選びには上限がなく、利用者は何か月先の日付も選べる。期間の告知は、期間がすべて終わるまで読まない。
+// 夜の帯は翌朝まで続くので、前日に終わった期間は今日の朝まで効いているとみなす
+const OVERNIGHT_DAYS = 1;
 // 2026-11-26 の OCR の実行（予定は 11-25 22:10 UTC）は、取れた画像の sha256 が読んだものと同じことを確かめていたが、
 // 記録する仕組みがなかった。確かめた記録（latest_key）がまだない店は、そのときに確かめたとみなす（12-10 に切れる）。
 // その回に画像を取れなかった 6 店は確かめていないので、この扱いをしない
@@ -20,16 +21,22 @@ const LEGACY_VERIFIED_AT = Date.UTC(2026, 10, 25, 22, 10) / 1000;
 const LEGACY_UNCHECKED = new Set(['123', '167', '205', '24', '63', '84']);
 
 const norm = (text) => (text ?? '').normalize('NFKC').replace(/\s+/g, '');
-const textOf = (html) => html.replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]+>/g, '')
+// OCR は星形の囲みの文字などを画像の説明（img の alt）に書くことがある。人数割引などの条件が入っていても読み落とさないよう、
+// 画像は「〔画像:説明〕」の文として残す（説明のない画像も）。ほかのタグの title なども同じ。ソフトクリームの挿絵（DECORATION）の
+// ほかは、表の外なら unknown-note、表の中ならセルの形が合わずに、店ごと読まない。タグは消さずに後ろへ足す（表の形を変えない）
+const PICTURE = /<[a-z][^>]*?\s(?:alt|title|aria-label)=(?:"([^"]*)"|'([^']*)')[^>]*>|<img\b[^>]*>/gi;
+const pictureOf = (html) => html.replace(PICTURE, (tag, double, single) => `${tag} 〔画像:${(double ?? single ?? '').replace(/[〔〕<>]/g, '')}〕 `);
+const textOf = (html) => pictureOf(html).replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]+>/g, '')
   .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ');
 // 表の外の文。表のあった所は「|」で区切る
 const outsideOf = (html) => norm(textOf(html.replace(/<table>[\s\S]*?<\/table>/g, '|')));
 
-// <table> を行ごとのセルの配列にする。colspan と rowspan は見出しの判定に使わないので展開しない
+// <table> を行ごとのセルの配列にする。colspan と rowspan は見出しの判定に使わないので展開しない。
+// セルの文字には、セルのタグ自身の title なども入れる（cell[0] はセルのタグごと）
 export function tablesOf(html) {
   return [...html.matchAll(/<table>([\s\S]*?)<\/table>/g)].map((table) => [...table[1].matchAll(/<tr>([\s\S]*?)<\/tr>/g)]
     .map((row) => [...row[1].matchAll(/<(t[hd])([^>]*)>([\s\S]*?)<\/t[hd]>/g)]
-      .map((cell) => ({ head: cell[1] === 'th', rowspan: /rowspan/.test(cell[2]), text: norm(textOf(cell[3])) }))));
+      .map((cell) => ({ head: cell[1] === 'th', rowspan: /rowspan/.test(cell[2]), text: norm(textOf(cell[0])) }))));
 }
 
 const RANGE = /^(\d{1,2}:\d{2})~(\d{1,2}:\d{2})/;
@@ -45,6 +52,8 @@ const KAN_CUSTOMER = {
   '会員・シニア': ['会員', 'シニア'],
   一般: ['一般'],
 };
+// セルの文字で引くので、Object のもとからある名前（'constructor' など）に当たらないよう、ここに書いた区分だけを見る
+const customerOf = (name) => (Object.hasOwn(KAN_CUSTOMER, name) ? KAN_CUSTOMER[name] : null);
 // 曜日の欄は曜日の文字だけ（parseDays は「※」の後ろなどを読み飛ばすので、条件の付いた欄を先に外す）
 const DAY_LABEL = /^(?:全日|[月火水木金土日祝前・~]+)$/;
 
@@ -89,11 +98,15 @@ const KNOWN_NOTES = [
   /★?ドリンクバー選択の(?:学生の)?お客様はソフトクリーム食べ放題となります。?/g,
   /ドリンクバー飲み放題利用でソフトクリーム\+120円で食べ放題!!/g,
 ];
+// ソフトクリームの挿絵の説明（「Soft serve ice cream cone illustration」「Illustration of a swirl of soft-serve ice cream
+// on a cone」など。空白は norm で消えている）。説明に文字や金額があるものは当たらない。
+// 挿絵は文の途中（「ドリンクバー飲み放題利用で〔画像〕ソフトクリーム+120円で…」）に入るので、ほかの文より先に消す
+const DECORATION = /〔画像:(?:illustrationof)?a?(?:swirlof)?(?:soft-?serve|swirl)?icecream(?:cone)?(?:onacone)?(?:illustration)?〕/gi;
 // 消した後に残ってよい文字（区切りだけ）
 const LEFTOVER = /^[|★、。・※]*$/;
 
 // 期間の告知。年末年始などの言葉か日付のある文は、期間（始めと終わりの日付）が読めて、
-// 今日から 21 日先までと重ならないときだけ、その文を消して残りを読む
+// その期間がもう終わっているときだけ、その文を消して残りを読む
 const PERIOD_WORD = /年末年始|年始|年末|特別料金|特別営業|料金改定|改定|期間限定|期間中|お盆|ゴールデンウ[ィイ]ーク|GW|臨時/;
 const DATE_WORD = /\d{1,2}(?:\/|月)\d{1,2}|\d{4}年/;
 const DATE = String.raw`(?:(\d{4})[年/])?(\d{1,2})(?:\/|月)(\d{1,2})(?![\d:])日?(?:\([月火水木金土日祝・]+\))?`;
@@ -143,7 +156,7 @@ function readKanTable(rows) {
   let headless = false;
   // 飲み物の見出しがなく、1 行目に時間帯と区分が並ぶ表。必須のドリンクバーの見出しを落とした読み方と区別できないので、
   // どの読み取りにもその注記がないことを convertKanOcr で確かめる
-  if (headRow === second && first.length > 1 && first.slice(1).every((cell) => KAN_CUSTOMER[cell.text])
+  if (headRow === second && first.length > 1 && first.slice(1).every((cell) => customerOf(cell.text))
     && daysOf(second[0]?.text)) {
     heads = [];
     headRow = [{ text: '' }, ...first.slice(1)];
@@ -176,11 +189,11 @@ function readKanTable(rows) {
     customers = [customers[0], '会員', '一般'];
     body = body.map((row) => row.slice(0, 4));
   }
-  if (!customers.length || !customers.every((name) => KAN_CUSTOMER[name]) || new Set(customers).size !== customers.length) {
+  if (!customers.length || !customers.every((name) => customerOf(name)) || new Set(customers).size !== customers.length) {
     return { reason: 'customer-head' };
   }
   // 会員と一般の列がない表は検算できないので読まない
-  if (!customers.includes('一般') || !customers.some((name) => KAN_CUSTOMER[name].includes('会員'))) return { reason: 'ratio' };
+  if (!customers.includes('一般') || !customers.some((name) => customerOf(name).includes('会員'))) return { reason: 'ratio' };
   const columns = [];
   for (const row of body) {
     const [label, ...cells] = row;
@@ -192,7 +205,7 @@ function readKanTable(rows) {
       const value = priceOf(cell.text);
       if (value === null) return { reason: 'price-text' };
       if (value < 1 || value > MAX_SLOT_PRICE) return { reason: 'price-range' };
-      for (const name of KAN_CUSTOMER[customers[index]]) prices[name] = value;
+      for (const name of customerOf(customers[index])) prices[name] = value;
     }
     // 一般は会員の 4/3 倍（1 円未満切り捨て）。どの店のどの行もこの関係なので、合わなければ読み違い
     if (prices.一般 !== Math.floor(prices.会員 * 4 / 3)) return { reason: 'ratio' };
@@ -302,8 +315,9 @@ export function periodDays(match, today) {
   return candidates.reduce((best, period) => (distance(period) < distance(best) ? period : best));
 }
 
-// 期間の告知を探す。期間が今日から 21 日先までと重ならなければ、その文を消した残りを返す。
-// 重なるか、期間（終わりの日付）が読めなければ null（店ごと読まない）
+// 期間の告知を探す。期間がもう終わっていれば、その文を消した残りを返す。
+// 期間がまだ終わっていない（何か月先でも）か、期間（終わりの日付）が読めなければ null（店ごと読まない）。
+// 告知の期間だけを料金なしにする形はアプリにないので、店ごと「料金表を見る」にする
 export function withoutPeriods(text, today) {
   const isPeriod = (sentence) => PERIOD_WORD.test(sentence) || DATE_WORD.test(sentence);
   if (!isPeriod(text)) return text;
@@ -317,7 +331,7 @@ export function withoutPeriods(text, today) {
     }
     const periods = [...sentence.matchAll(PERIOD)].map((match) => periodDays(match, today));
     if (!periods.length || periods.some((period) => !period)) return null;
-    if (periods.some(([from, to]) => from <= now + HORIZON_DAYS && now <= to)) return null;
+    if (periods.some(([, to]) => now <= to + OVERNIGHT_DAYS)) return null;
     // 期間の外の告知。日付のほかに期間の言葉のない日付が残っていれば、読めていない期間がある
     if (DATE_WORD.test(sentence.replace(PERIOD, ''))) return null;
   }
@@ -326,7 +340,7 @@ export function withoutPeriods(text, today) {
 
 // 表の外の文から、知っている形の文を消した残り。残りがあれば料金に掛かる条件かもしれない
 function unknownNote(outside, today) {
-  let rest = withoutPeriods(outside, today);
+  let rest = withoutPeriods(outside.replace(DECORATION, ''), today);
   if (rest === null) return { reason: 'period' };
   rest = rest.replace(SOLO_NOTE, '').replace(BAR_ONLY, '');
   for (const pattern of KNOWN_NOTES) rest = rest.replace(pattern, '');
