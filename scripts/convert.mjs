@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url';
 import { convertBigEcho } from './web/bigecho.js';
 import { convertManeki } from './web/maneki.js';
 import { convertMegabig, reportMegabig } from './web/megabig.js';
+import { manekiConverter } from './web/maneki.js';
+import { convertMegabig } from './web/megabig.js';
 import { convertKanOcr } from './web/ocr.js';
 import { convertMegabig } from './web/megabig.js';
 import { convertKanShop } from './web/ocr.js';
@@ -30,6 +32,9 @@ const TARGETS = {
   maneki: ['maneki_prices.json', (shop) => convertManeki(shop.tables)],
   // メガビッグは表の外の告知・リンク・読めなかった表も渡す。変換する日は CONVERT_TODAY（YYYY-MM-DD）で差し替えられる
   megabig: ['megabig_prices.json', (shop) => reportMegabig(shop.page, convertMegabig(shop.sections, shop.hours, shop))],
+  // まねきねこは全店の記録から共通の画像（飲み放題の案内など）を数えてから、告知と料金表を店ごとに確かめる
+  maneki: ['maneki_prices.json', manekiConverter(JSON.parse(readFileSync(join(ROOT, 'source', 'maneki_prices.json'), 'utf8')).shops)],
+  megabig: ['megabig_prices.json', (shop) => convertMegabig(shop.sections, shop.hours)],
   kan: ['ocr.json', (shop) => (shop.chain === 'カラオケ館' ? convertKanOcr(shop.reads) : { reason: 'other-chain' })],
   megabig: ['megabig_prices.json', (shop) => convertMegabig(shop.sections, shop.hours)],
   // 画像が変わったのに読めていない店と、14 日画像を確かめていない店は外す（ocr.js の convertKanShop）。

@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """OCR で読む画像を決めて、作業フォルダに置く。
 
-対象は、カラオケ館の全店の 30 分料金の画像と、まねきねこで PDF の文字から金額を作れない店の 1 ページ目。
-前回読んだものと同じ画像（まねきねこは PDF の etag、カラオケ館は画像の sha256 で判断）は読み直さない。
+対象は、カラオケ館の全店の 30 分料金の画像。前回読んだものと同じ画像（画像の sha256 で判断）は読み直さない。
+まねきねこは対象にしない（OCR の結果を金額に使う変換がなく、PDF を取り直すだけ公式サイトへの負担になるため）。
+maneki_targets は残してあるが呼ばない。source/ocr.json に残っているまねきねこの行は消さない（消すと ocr の店数が
+大きく減り、validate_data.py が ocr.json ごと前回に戻してカラオケ館の更新も止まる）。
 
 カラオケ館は、取れた画像の sha256 と取った時刻を kan_checks.json に書く。merge.py がこれを ocr.json の latest_key と
 verified_at に移す（画像が読んだものと同じなら verified_at を進める）。scripts/web/ocr.js は、画像が変わったのに
@@ -235,6 +237,28 @@ def main() -> None:
         for key in gone:
             checks.pop(key, None)
         print(f"::warning::画像がない・画像でない応答が {len(gone)} 店あり、サイト全体の異常とみなして、この回の印は書きません", flush=True)
+    session = requests.Session()
+    session.headers["User-Agent"] = USER_AGENT
+    chosen, failed = [], 0
+    for target in kan_targets():
+        if target["key"] and stored.get(target["id"], {}).get("key") == target["key"]:
+            continue
+        try:
+            data = fetch(session, target["url"])
+            if target["chain"] == "カラオケ館":
+                target["key"] = hashlib.sha256(data).hexdigest()
+                if stored.get(target["id"], {}).get("key") == target["key"]:
+                    continue
+                image = Image.open(io.BytesIO(data)).convert("RGB")
+            else:
+                image = render_pdf(data)
+        except Exception as error:  # 1 店の失敗で残りを止めない。前回の結果は残る
+            failed += 1
+            print(f"::warning::{target['id']}: {error}", flush=True)
+            continue
+        target["file"] = f"{target['id']}.jpg"
+        image.save(work / target["file"], quality=92)
+        chosen.append(target)
     (work / "targets.json").write_text(json.dumps(chosen, ensure_ascii=False), encoding="utf-8")
     (work / "kan_checks.json").write_text(json.dumps(checks, ensure_ascii=False, sort_keys=True), encoding="utf-8")
     reads = sum(target["reads"] for target in chosen)

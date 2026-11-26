@@ -393,12 +393,59 @@ def _bigecho_raw(item, old, key, issues):
         issues.append(f"{key}: 料金ページ URL が異常")
 
 
+MANEKI_STATUS = {"closed", "no-pdf", "several-pdfs", "pdf-missing", "unreadable-pdf", "pdf-unfetched"}
+
+
+def _maneki_extra(item, key, issues):
+    """告知を残すようにした記録（extract 2）の項目の形。変換は形の崩れた記録を読まないが、壊れた取得を早く止める"""
+    status = item.get("status")
+    if status is not None and status not in MANEKI_STATUS:
+        issues.append(f"{key}: まねきねこの記録の状態が不正")
+    if "pdfs" in item and (type(item["pdfs"]) is not int or not 0 <= item["pdfs"] <= 50):
+        issues.append(f"{key}: PDF の数が不正")
+    if "extract" in item and type(item["extract"]) is not int:
+        issues.append(f"{key}: 取り出しの版が不正")
+    for name in ("notices", "news"):
+        rows = item.get(name, [])
+        if not isinstance(rows, list) or len(rows) > 60:
+            issues.append(f"{key}: {name} が配列ではありません")
+            continue
+        for row in rows:
+            if not isinstance(row, dict) or not isinstance(row.get("text"), str) or len(row["text"]) > 6000:
+                issues.append(f"{key}: {name} の文が不正")
+                break
+            if name == "news" and not re.fullmatch(r"(?:\d{4}-\d{2}-\d{2})?", str(row.get("date", ""))):
+                issues.append(f"{key}: お知らせの日付が不正")
+                break
+            if row.get("kind", "special-hours") != "special-hours":
+                issues.append(f"{key}: {name} の種類が不正")
+                break
+    pages = item.get("pages", [])
+    if not isinstance(pages, list) or len(pages) > 60:
+        issues.append(f"{key}: pages が配列ではありません")
+    else:
+        for page in pages:
+            counts_ok = isinstance(page, dict) and all(type(page.get(k)) is int and page[k] >= 0 for k in ("chars", "paths", "images"))
+            area = page.get("image_area") if isinstance(page, dict) else None
+            look = page.get("look") if isinstance(page, dict) else None
+            since = page.get("since") if isinstance(page, dict) else None
+            if (not counts_ok or not isinstance(page.get("table"), bool) or not isinstance(area, (int, float))
+                    or not 0 <= area <= 1 or (look is not None and not re.fullmatch(r"[0-9a-f]{16}", str(look)))
+                    or (since is not None and (type(since) is not int or since <= 0))):
+                issues.append(f"{key}: ページの統計が不正")
+                break
+
+
 def _maneki_raw(item, old, key, issues):
     tables = item.get("tables")
     if not isinstance(tables, list):
         issues.append(f"{key}: PDF tokens が配列ではありません")
         return
-    if old and old.get("tables") and not tables:
+    _maneki_extra(item, key, issues)
+    # 料金なしになった理由が記録にある店（閉店、PDF がない・2 つ以上・消えた・壊れた・取れなかった）と、PDF を読み直して料金表の
+    # ページがなかった店（文字をアウトライン化した PDF など）は、取得の異常ではない。変換は金額を出さない
+    explained = item.get("status") in MANEKI_STATUS or (item.get("extract") == 2 and isinstance(item.get("pages"), list))
+    if old and old.get("tables") and not tables and not explained:
         issues.append(f"{key}: PDF から料金表が突然消失")
     for page in tables:
         if not isinstance(page, list):
