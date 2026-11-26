@@ -512,12 +512,36 @@ def _cotedazur_prices(item, old, key, issues):
             issues.append(f"{key}: 料金セルが大量に欠落")
         _price_delta(before, values, key, issues)
 
+# メガビッグの金額のセルは、取得で数字だけにしたもの（カンマなし）か、その曜日は提供なしの「-」
+MEGABIG_CELL = re.compile(r"^(?:\d{1,5}|-)$")
+# ページは取れたが料金表がない・読めない店の記録（料金なし）。店数の減少に数えないよう、記録は残す
+MEGABIG_MISSING = {"no-price-table", "no-slot-table", "not-found", "unreadable-shop"}
+
+
 def _megabig_raw(item, old, key, issues):
+    page = item.get("page")
+    if page and (urlsplit(page).scheme != "https" or urlsplit(page).hostname != "megakara.jp"):
+        issues.append(f"{key}: 料金ページ URL が異常")
     sections = item.get("sections")
+    if "missing" in item:
+        if item["missing"] not in MEGABIG_MISSING or sections != []:
+            issues.append(f"{key}: 料金なしの記録が不正")
+        return
     if not isinstance(sections, list) or not sections:
         issues.append(f"{key}: 料金表がありません")
         return
-    if old and old.get("sections") and len(sections) < len(old["sections"]) * 0.6:
+    skipped = item.get("skipped", [])
+    if not isinstance(skipped, list) or any(not isinstance(entry, dict) or not isinstance(entry.get("reason"), str)
+                                            for entry in skipped):
+        issues.append(f"{key}: 読めなかった表の記録が不正")
+        skipped = []
+    for field in ("notices", "links"):
+        texts = item.get(field, [])
+        if not isinstance(texts, list) or any(not isinstance(text, str) or len(text) > 2000 for text in texts):
+            issues.append(f"{key}: {field} の形式が不正")
+    # 読めずに捨てた表も数える（捨てた理由は skipped に残り、変換が警告に出す）
+    before = len(old.get("sections") or []) + len(old.get("skipped") or []) if old and "missing" not in old else 0
+    if before and len(sections) + len(skipped) < before * 0.6:
         issues.append(f"{key}: メガビッグの料金表が大量欠落")
     has_slot = False
     for i, section in enumerate(sections):
@@ -540,14 +564,10 @@ def _megabig_raw(item, old, key, issues):
                 issues.append(f"{key}.sections[{i}]: 金額の列数が見出しと一致しません")
                 continue
             for value in row[1:]:
-                match = PRICE_TEXT.fullmatch(unicodedata.normalize("NFKC", value).replace(" ", ""))
-                if not match or int(match[1].replace(",", "")) > 30000:
+                if not MEGABIG_CELL.fullmatch(value) or (value != "-" and not 0 < int(value) <= 30000):
                     issues.append(f"{key}.sections[{i}]: 金額が不正 ({value!r})")
     if not has_slot:
         issues.append(f"{key}: 30分料金表がありません")
-    page = item.get("page")
-    if page and (urlsplit(page).scheme != "https" or urlsplit(page).hostname != "megakara.jp"):
-        issues.append(f"{key}: 料金ページ URL が異常")
 
 
 def _ocr(item, old, key, issues):
