@@ -89,6 +89,16 @@ jobs:
         continue-on-error: true
         run: python scripts/update_megabig.py
 
+      # 歌広場は店のページの料金表を読む（ETag も gzip もないので、店ごとに 3 日に 1 回、1.5 秒ずつあけて取る）
+      - name: Update Utahiroba prices
+        id: utahiro
+        timeout-minutes: 75
+        env:
+          HTTP_PROXY: ${{ env.CRAWL_PROXY }}
+          HTTPS_PROXY: ${{ env.CRAWL_PROXY }}
+        continue-on-error: true
+        run: python scripts/update_utahiro_prices.py
+
       - name: Update Jankara prices
         id: jankara
         # プロキシが遅くても後のチェーンの更新を止めない（ふだんは数分で終わる）

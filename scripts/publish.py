@@ -32,6 +32,7 @@ SOURCES = {
     "banban": ROOT / "source" / "banban_prices.json",
     "cotedazur": ROOT / "build" / "cotedazur.json",
     "joyjoy": ROOT / "build" / "joyjoy.json",
+    "utahiro": ROOT / "build" / "utahiro.json",
 }
 # 前回よりこの割合を下回ったら、取得か変換の異常とみなして前回のファイルを残す。
 # push_data.sh が元データの店数を検査した後（PUBLISH_VALIDATED=1）は使わない。変換が読まなくなった店で
@@ -131,7 +132,7 @@ def publish_file(name: str, document: dict, old: dict | None, dist: Path = DIST,
 
 def main() -> int:
     # sourceの確認日時を時刻だけのコミットにせず、manifestだけ正常巡回を記録する。
-    allowed = {"chains", "jankara", "bigecho", "maneki", "megabig", "joyjoy", "joysound", "cotedazur"}
+    allowed = {"chains", "jankara", "bigecho", "maneki", "megabig", "joyjoy", "joysound", "cotedazur", "utahiro"}
     raw = os.environ.get("REFRESH_CONFIRMED_DATA", "")
     confirmed = {name for name in raw.split(",") if name}
     if not confirmed.issubset(allowed):
@@ -159,7 +160,8 @@ def main() -> int:
     files, published = {}, True
     for name, source in SOURCES.items():
         # ROUND1の登録済み・確認済み店舗がない間は空ファイルを公開しない。
-        if name == "round1" and not source.exists() and name not in old:
+        # 歌広場の変換結果は convert.mjs が必ず作るが、まだ一度も配っていなければ、ない場合も飛ばす
+        if name in ("round1", "utahiro") and not source.exists() and name not in old:
             continue
         document = json.loads(source.read_text(encoding="utf-8"))
         document, latest_seen = without_stale(name, document, state, confirmed_at)

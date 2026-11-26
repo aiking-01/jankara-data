@@ -8,6 +8,7 @@ import { convertMegabig } from './web/megabig.js';
 import { convertKanOcr } from './web/ocr.js';
 import { convertCotedazurShops } from './web/cotedazur.js';
 import { convertJoysound } from './web/joysound.js';
+import { convertUtahiroShops, todayJst } from './web/utahiro.js';
 import { implausiblePrice } from './plausible.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -51,6 +52,40 @@ for (const [id, shop] of Object.entries(coteShops)) {
 }
 writeFileSync(join(ROOT, 'build', 'cotedazur.json'), JSON.stringify({ updated_at: coteSource.updated_at, shops: coteShops }));
 console.log(`cotedazur: ${accepted}/${original} shops (${coteFailures.length} unsupported)`);
+
+// 歌広場は、ほかの店の告知の期間も見るので全店をまとめて変換する。変換する日は JST の今日（CONVERT_TODAY で差し替え可）。
+// 元データがない初回や、変換が途中で失敗したときは、配る店なしにしてほかのチェーンの変換を続ける
+const utahiroPath = join(ROOT, 'source', 'utahiro_prices.json');
+const utahiro = { updated_at: 0, shops: {} };
+// 店ごとの最後に確かめた日時（seen.py が select_changes.py の前に残す）。告知の期間が終わった後に確かめたかを見る。
+// 読めなければ元データの checked_at だけで判断する（取り直したことが分からない店は出さない側になる）
+let utahiroSeen = {};
+try {
+  const seen = JSON.parse(readFileSync(join(ROOT, 'source', 'seen.json'), 'utf8'));
+  utahiroSeen = seen?.files?.['source/utahiro_prices.json'] ?? {};
+} catch {
+  utahiroSeen = {};
+}
+try {
+  const source = existsSync(utahiroPath) ? JSON.parse(readFileSync(utahiroPath, 'utf8')) : { updated_at: 0, shops: {} };
+  utahiro.updated_at = Number.isInteger(source.updated_at) ? source.updated_at : 0;
+  const { shops, reasons } = convertUtahiroShops(source.shops, todayJst(), utahiroSeen);
+  for (const [id, converted] of Object.entries(shops)) {
+    const odd = implausiblePrice(converted);
+    if (odd) {
+      console.warn(`::warning::utahiro/${id}: 金額が不自然なので配りません (${odd})`);
+      continue;
+    }
+    utahiro.shops[id] = { checked_at: source.shops[id].checked_at };
+    for (const field of FIELDS) if (!isEmpty(converted[field])) utahiro.shops[id][field] = converted[field];
+  }
+  const why = Object.entries(reasons).map(([reason, ids]) => `${reason} ${ids.length}`).join(', ');
+  console.log(`utahiro: ${Object.keys(utahiro.shops).length} / ${Object.keys(source.shops ?? {}).length}${why ? ` (配らない理由: ${why})` : ''}`);
+} catch (error) {
+  console.warn(`::warning::utahiro: 変換できないので歌広場の金額は配りません (${error?.message ?? error})`);
+  utahiro.shops = {};
+}
+writeFileSync(join(ROOT, 'build', 'utahiro.json'), JSON.stringify(utahiro));
 
 for (const [name, [file, convert]] of Object.entries(TARGETS)) {
   const source = JSON.parse(readFileSync(join(ROOT, 'source', file), 'utf8'));
