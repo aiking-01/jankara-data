@@ -8,6 +8,7 @@ import { convertMegabig } from './web/megabig.js';
 import { convertKanOcr } from './web/ocr.js';
 import { convertCotedazurShops } from './web/cotedazur.js';
 import { convertJoysound } from './web/joysound.js';
+import { convertDay, convertJoyjoyShops } from './web/joyjoy.js';
 import { implausiblePrice } from './plausible.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -74,12 +75,20 @@ for (const [name, [file, convert]] of Object.entries(TARGETS)) {
 
 // JOYJOYは公式ページに掲載された「～」付きの最低価格を保つ。通常料金へ
 // 変換すると実額と誤認されるため、単位・時間帯・最低価格をそのまま配る。
+// 料金なしの店と、期間の告知が変換する日から 21 日先までに効く店は配らない（scripts/web/joyjoy.js）
 const joyjoy = JSON.parse(readFileSync(join(ROOT, 'source', 'joyjoy_prices.json'), 'utf8'));
+const joyjoyDay = convertDay();
+const { shops: joyjoyShops, rejected: joyjoyRejected } = convertJoyjoyShops(joyjoy.shops, joyjoyDay);
+const joyjoyKinds = {};
+for (const { kind } of joyjoyRejected) joyjoyKinds[kind] = (joyjoyKinds[kind] ?? 0) + 1;
+for (const [kind, count] of Object.entries(joyjoyKinds)) {
+  console.warn(`::warning::joyjoy: ${count} 店を配りません: ${kind}`);
+}
 writeFileSync(join(ROOT, 'build', 'joyjoy.json'), JSON.stringify({
   updated_at: joyjoy.updated_at,
-  shops: joyjoy.shops,
+  shops: joyjoyShops,
 }));
-console.log(`joyjoy: ${Object.keys(joyjoy.shops).length} 店 (公式最低料金)`);
+console.log(`joyjoy: ${Object.keys(joyjoyShops).length} / ${Object.keys(joyjoy.shops).length} 店 (公式最低料金、${joyjoyDay} 時点)`);
 
 // ROUND1 の B-30 画像は通常のカラオケ館 OCR とは別形式。
 // 目視確認・画像SHA256照合済みの店舗だけ配信する。金額未確認の初期状態で
