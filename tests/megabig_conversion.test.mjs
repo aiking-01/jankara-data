@@ -59,22 +59,45 @@ test('受付の始まりが時間帯の始まりと違うプランは出さな�
   assert.equal(plan(convert(shop), '夕方フリータイム'), undefined);
 });
 
-test('「-」だけの列はその曜日を料金なしにし、一部だけ「-」の表や読めないセルの表は出さない', () => {
+test('「-」だけの列はその曜日を料金なしにし、一部だけ「-」の表は出さない', () => {
   const shop = copy(data['mb-0907']);
   for (const values of section(shop, '昼3時間パック').rows) values[1] = '-';
   section(shop, '昼フリータイム').rows[0][1] = '-';
-  section(shop, '夕方フリータイム').rows[0][2] = '980円※2';
   const result = convert(shop);
   const pack = plan(result, '昼3時間パック');
   assert.deepEqual(row(pack, '平日').prices, {});
   assert.equal(row(pack, '土日祝').prices.一般, 1800);
   assert.equal(reasons(result)['昼フリータイム'], 'partial-dash');
-  assert.equal(reasons(result)['夕方フリータイム'], 'price-cell');
 });
 
-test('取得で捨てた表は警告の一覧に出す', () => {
-  const shop = { ...copy(data['mb-0907']), skipped: [{ time: '早朝パック OPEN〜12:00', title: '早朝パック', reason: 'price-cell' }] };
-  assert.equal(reasons(convert(shop))['早朝パックOPEN〜12:00'], 'price-cell');
+test('読めないセルや見慣れない行のある表があれば、店ごと出さない', () => {
+  // セルの注記（※2）や「年末年始」の行は、ほかの表にも効く条件かもしれない
+  const shop = copy(data['mb-0907']);
+  section(shop, '夕方フリータイム').rows[0][2] = '980円※2';
+  const result = convert(shop);
+  assert.equal(result.reason, 'unread-table');
+  assert.equal(reasons(result)['夕方フリータイム'], 'price-cell');
+  const extra = copy(data['mb-0907']);
+  section(extra, '夕方フリータイム').rows.push(['年末年始一般', '2400', '2800']);
+  assert.equal(convert(extra).reason, 'period-notice'); // 行の名前の「年末年始」
+  section(extra, '夕方フリータイム').rows.at(-1)[0] = '一般(土曜)';
+  assert.equal(convert(extra).reason, 'unread-table');
+});
+
+test('取得で捨てた表は警告の一覧に出し、読めないセル・形の違う表を捨てた店は出さない', () => {
+  const shop = { ...copy(data['mb-0907']), skipped: [{ time: '早朝パック OPEN〜12:00', title: '早朝パック', note: '', reason: 'price-cell' }] };
+  const result = convert(shop);
+  assert.equal(reasons(result)['早朝パックOPEN〜12:00'], 'price-cell');
+  assert.equal(result.reason, 'unread-table');
+  shop.skipped[0].reason = 'shape';
+  assert.equal(convert(shop).reason, 'unread-table');
+  // 金額の行のない表は捨てても店は出す。ただし備考の告知は見る
+  shop.skipped[0].reason = 'no-rows';
+  assert.equal(convert(shop).reason, undefined);
+  shop.skipped[0].note = '※12月29日(火)～1月3日(日)は年末年始料金となります';
+  assert.equal(convert(shop).reason, 'period-notice');
+  shop.skipped[0].note = '上記は2名様以上で御利用頂く料金となります';
+  assert.deepEqual(plans(convert(shop), 'フリータイム'), []);
 });
 
 test('備考に曜日限定の時刻があるプランは出さない。「料金」の「金」は曜日にしない', () => {
@@ -161,14 +184,56 @@ test('読めない 1 人の文がある表は、1 人の金額を決めない', 
   assert.equal(reasons(result)['昼3時間パック'], 'solo-unknown');
 });
 
-test('過ぎた期間料金の告知は無視し、今日から 21 日先までと重なる告知は店ごと出さない', () => {
-  const summer = data['mb-1434-summer']; // 「8月1日(土)～9月6日(日)は夏季料金」
-  assert.equal(convert(summer, '2026-11-26').reason, undefined);
+test('過ぎた期間料金の告知は無視し、今日以降と重なる告知は先のものでも店ごと出さない', () => {
+  // 「8月1日(土)～9月6日(日)は夏季料金を導入させていただいております。 ＜夏季期間の料金はこちら＞」（2026 年の曜日）
+  const summer = data['mb-1434-summer'];
+  assert.equal(convert(summer, '2026-11-26').reason, undefined); // 「＜夏季期間の料金はこちら＞」は同じ過ぎた告知のリンク
+  assert.deepEqual(convert(summer, '2026-11-26').alerts, []);
   assert.equal(convert(summer, '2026-08-20').reason, 'period-notice');
-  assert.equal(convert(summer, '2026-07-15').reason, 'period-notice'); // 21 日以内に始まる
-  const ahead = convert(summer, '2026-07-01');
-  assert.equal(ahead.reason, undefined);
-  assert.deepEqual(ahead.alerts, ['夏季']);
+  assert.equal(convert(summer, '2026-07-15').reason, 'period-notice');
+  // アプリは先の日付をいくらでも選べ、一覧に注意書きが出ないので、21 日より先に始まる告知でも出さない
+  assert.equal(convert(summer, '2026-06-01').reason, 'period-notice');
+});
+
+test('去年の曜日のままの告知は、今日にいちばん近い年の暦に合わないので出さない', () => {
+  const shop = copy(data['mb-0907']);
+  shop.notices = ['12月28日(日)～1月4日(日)は年末年始料金となります']; // 2025 年の曜日
+  assert.equal(convert(shop, '2026-12-30').reason, 'period-notice');
+  assert.equal(convert(shop, '2026-12-10').reason, 'period-notice');
+  assert.equal(convert(shop, '2026-11-26').reason, 'period-notice');
+  // 2026 年の夏季の告知を 2027 年にそのまま出した場合
+  const summer = data['mb-1434-summer'];
+  assert.equal(convert(summer, '2027-07-25').reason, 'period-notice');
+  assert.equal(convert(summer, '2027-08-10').reason, 'period-notice');
+  // 終わったばかりの告知は、曜日が合うので無視する
+  shop.notices = ['12月28日(月)～1月4日(月)は年末年始料金となります']; // 2026 年の曜日
+  assert.equal(convert(shop, '2027-01-10').reason, undefined);
+});
+
+test('文ごとに読む。過ぎた告知と同じ見出し・備考にある別の告知を読み落とさない', () => {
+  const shop = copy(data['mb-1434']);
+  const past = '8月1日(土)～9月6日(日)は夏季料金を導入させていただいております。';
+  shop.notices = [...data['mb-1434'].notices, past];
+  assert.equal(convert(shop, '2026-12-30').reason, undefined);
+  shop.notices = [...data['mb-1434'].notices, `${past} 年末年始は特別料金となります。`];
+  assert.equal(convert(shop, '2026-12-30').reason, 'period-notice');
+  shop.notices = [...data['mb-1434'].notices, '8月1日(土)～9月6日(日)は夏季料金。 年末年始期間は料金が変わります'];
+  assert.equal(convert(shop, '2026-12-30').reason, 'period-notice');
+  shop.notices = [...data['mb-1434'].notices, `${past} ＜年末年始期間の料金はこちら＞`];
+  assert.equal(convert(shop, '2026-12-30').reason, 'period-notice'); // 過ぎた告知とは別の季節のリンク
+  // 「。」のない備考でも、日付のすぐ後の期間の語のほかに期間の語があれば出さない
+  const noted = copy(data['mb-1434']);
+  section(noted, '昼3時間パック').note += ' 8月1日～9月6日は夏季料金 年末年始は別料金';
+  assert.equal(convert(noted, '2026-12-30').reason, 'period-notice');
+  section(noted, '昼3時間パック').note = '最終受付（16:00） 8月1日～9月6日は夏季料金';
+  assert.equal(convert(noted, '2026-12-30').reason, undefined);
+  section(noted, '昼3時間パック').note = '最終受付（16:00） 8月1日～9月6日 夏季料金';
+  assert.equal(convert(noted, '2026-12-30').reason, undefined);
+  section(noted, '昼3時間パック').note = '最終受付（16:00） 年末年始(12/29～1/3)は特別料金'; // 日付の前の語は日付に付けない
+  assert.equal(convert(noted, '2027-02-10').reason, 'period-notice');
+  // 日付のある文でも、表の外の曜日の条件は読めない条件とする
+  shop.notices = [...data['mb-1434'].notices, `${past} 土日祝は2時間制`];
+  assert.equal(convert(shop, '2026-12-30').reason, 'notice-days');
 });
 
 test('年末年始の告知: 終わりが読めなければ出さない。年をまたぐ期間の年を決める', () => {
@@ -177,9 +242,7 @@ test('年末年始の告知: 終わりが読めなければ出さない。年を
   assert.equal(convert(shop).reason, 'period-notice');
 
   shop.notices = ['12月28日(月)～1月4日(月)は年末年始料金となります'];
-  const before = convert(shop);
-  assert.equal(before.reason, undefined);
-  assert.deepEqual(before.alerts, ['年末年始']);
+  assert.equal(convert(shop).reason, 'period-notice'); // 先の告知も出さない
   assert.equal(convert(shop, '2026-12-10').reason, 'period-notice');
   assert.equal(convert(shop, '2027-01-03').reason, 'period-notice');
   assert.equal(convert(shop, '2027-01-10').reason, undefined);
@@ -188,19 +251,58 @@ test('年末年始の告知: 終わりが読めなければ出さない。年を
   assert.equal(convert(shop).reason, 'period-notice');
   shop.notices = ['年末年始は特別料金となります'];
   assert.equal(convert(shop).reason, 'period-notice');
+  // 日付によって料金が変わるという文も、期間が分からないので出さない
+  for (const text of ['特定日は料金が異なります', '一部の日は料金が異なります']) {
+    shop.notices = [text];
+    assert.equal(convert(shop).reason, 'period-notice', text);
+  }
   shop.notices = ['12/30～1/3は特別料金'];
-  assert.equal(convert(shop, '2026-11-26').reason, undefined);
-  assert.equal(convert(shop, '2026-12-20').reason, 'period-notice');
+  assert.equal(convert(shop, '2026-11-26').reason, 'period-notice');
+  assert.equal(convert(shop, '2027-01-03').reason, 'period-notice');
+  assert.equal(convert(shop, '2027-01-04').reason, undefined);
+});
+
+test('月のない 2 つめ以降の日付も期間に入れる', () => {
+  const shop = copy(data['mb-0907']);
+  shop.notices = ['12月30日(水)・31日(木)は年末料金となります'];
+  assert.equal(convert(shop, '2026-12-31').reason, 'period-notice');
+  assert.equal(convert(shop, '2027-01-01').reason, undefined);
+  shop.notices = ['12月24日(木)、25日(金)はクリスマス特別料金'];
+  assert.equal(convert(shop, '2026-12-25').reason, 'period-notice');
+  shop.notices = ['12/30・31は特別料金'];
+  assert.equal(convert(shop, '2026-12-31').reason, 'period-notice');
+  // 月の分からない日付・日の分からない月は読めない
+  shop.notices = ['31日は特別料金'];
+  assert.equal(convert(shop, '2027-02-10').reason, 'period-notice');
+  shop.notices = ['12月中は料金が異なります'];
+  assert.equal(convert(shop, '2027-02-10').reason, 'period-notice');
+});
+
+test('「…まで」だけの告知は、日付が過ぎても載っている間は出さない', () => {
+  const shop = copy(data['mb-0907']);
+  for (const text of ['以下の表示料金は12月27日(日)までの料金となります。', '※12月27日(日)までの料金です',
+    '料金表は12月27日(日)まで有効です', '下記料金は12月27日(日)までとなります', '掲載の料金は12月27日(日)まで適用']) {
+    shop.notices = [text];
+    assert.equal(convert(shop, '2026-12-28').reason, 'period-notice', text);
+    assert.equal(convert(shop, '2026-11-26').reason, 'period-notice', text);
+  }
 });
 
 test('期間の読み方', () => {
   const today = jstDay('2026-11-26');
   const day = (text) => jstDay(text);
   assert.deepEqual(noticeWindows('8月1日(土)～9月6日(日)は夏季料金', today), [[day('2026-08-01'), day('2026-09-06')]]);
-  assert.deepEqual(noticeWindows('表示料金は11月27日(木)までの料金となります', today), [[day('2025-11-28'), Infinity]]);
+  assert.deepEqual(noticeWindows('表示料金は11月27日(金)までの料金となります', today), [[-Infinity, Infinity]]);
+  assert.deepEqual(noticeWindows('表示料金は11月27日(木)までの料金となります', today), [null]); // 2025 年の曜日
   assert.deepEqual(noticeWindows('12月31日は特別料金', today), [[day('2026-12-31'), day('2026-12-31')]]);
-  assert.deepEqual(noticeWindows('1月5日まで期間限定料金', today), [[-Infinity, day('2027-01-05')]]);
+  assert.deepEqual(noticeWindows('1月5日まで期間限定料金', today), [[-Infinity, Infinity]]);
   assert.deepEqual(noticeWindows('12月31日(月)', today), [null]);
+  assert.deepEqual(noticeWindows('1月1日(金)～3日(日)は正月料金', today), [[day('2027-01-01'), day('2027-01-03')]]);
+  assert.deepEqual(noticeWindows('12月29日～翌1月3日', today), [[day('2026-12-29'), day('2027-01-03')]]);
+  assert.deepEqual(noticeWindows('12月30日(水)・31日(木)', today),
+    [[day('2026-12-30'), day('2026-12-30')], [day('2026-12-31'), day('2026-12-31')]]);
+  // 日付ではない数字は日付にしない
+  assert.deepEqual(noticeWindows('最大12時間ご利用・3日前までにご予約・1日2回まで', today), []);
 });
 
 test('料金の PDF・画像へのリンク、税別の表、表の外の曜日の条件があれば店ごと出さない', () => {
@@ -210,6 +312,24 @@ test('料金の PDF・画像へのリンク、税別の表、表の外の曜日�
   assert.equal(convert({ ...shop, notices: ['30分料金（税別）'] }).reason, 'tax-excluded');
   assert.equal(convert({ ...shop, notices: ['土日祝は2時間制'] }).reason, 'notice-days');
   assert.equal(convert({ ...shop, unread_tables: 1 }).reason, 'unread-table');
+});
+
+test('表の外の 1 人の料金の文は、店全体で 1 人の金額を決められないものとする', () => {
+  for (const text of ['1名様のご利用の場合は別料金となります', '1名様でのご利用は30分毎+100円の追加料金となります',
+    'お一人様でのご利用はお部屋代として+300円頂戴します']) {
+    const shop = { ...copy(data['mb-0907']), notices: [...data['mb-0907'].notices, text] };
+    const result = convert(shop);
+    assert.equal(result.reason, undefined, text);
+    assert.deepEqual(plans(result, 'フリータイム'), [], text);
+    assert.deepEqual(result.solo, [], text);
+    assert.equal(plans(result, '30分').length, 2, text);
+  }
+  // 「お一人様30分料金（税込）」「1名様あたりの料金」は 1 人あたりの金額という意味。「最大11名様」は 1 人の文ではない
+  for (const text of ['最大11名様までご利用いただけます', '上記は1名様あたりの金額です']) {
+    const shop = { ...copy(data['mb-0907']), notices: [...data['mb-0907'].notices, text] };
+    assert.ok(plan(convert(shop), '昼3時間パック'), text);
+  }
+  assert.ok(plan(convert(data['mb-0907']), '昼3時間パック'));
 });
 
 test('料金表がない記録は料金を出さない', () => {

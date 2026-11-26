@@ -9,14 +9,16 @@
 // - 1 人の金額は、表ごとの追加料金の文と、店全体の「2名様以上の料金」の文から決める。決められない曜日は、
 //   30 分は 1 人の行を空にし（アプリは注意書きを付ける）、フリータイム・パックはその曜日の料金を出さない
 //   （アプリはフリータイム・パックに 1 人の注意書きを出せず、2 名以上の金額を 1 人に出してしまうため。ビッグエコーと同じ扱い）。
-// - 期間料金の告知（年末年始・夏季・「表示料金は…まで」など）は、変換する日から 21 日先までと期間が重なれば店ごと出さない。
-//   終わりの日が読めない告知も出さない。過ぎた告知は無視する。料金の PDF や画像へのリンクがあれば店ごと出さない。
+//   表の外の文に 1 人の料金の文があれば、店全体で 1 人の金額を決められないものとして扱う。
+// - 期間料金の告知（年末年始・夏季・「表示料金は…まで」など）は、文ごとに読む。今日以降と重なる告知は、先の告知でも店ごと出さない
+//   （アプリは先の日付をいくらでも選べ、一覧には注意書きが出ないため）。終わりの日が読めない告知、「…まで」だけの告知、
+//   日付のない告知の語、月や日だけの日付も出さない。過ぎた告知は、日付のすぐ後の期間の語（「～9月6日(日)は夏季料金」）のほかに
+//   期間の語がなく、曜日が今日にいちばん近い年の暦に合うときだけ無視する（去年の曜日のまま出した告知を去年のものと読まない）。
+//   料金の PDF や画像へのリンク、読めない表（取得で捨てた表や読めないセル）があれば店ごと出さない。
 import { dayLabels, parseDays, parseTimeRange } from './bigecho.js';
 
 const CUSTOMERS = ['学生会員', '学生', '会員', 'シニア', '一般'];
 const DAY_MS = 864e5;
-// アプリは配信データを最長 21 日使い、利用者は先の日付も選べる。この間に期間料金が始まる店は出さない
-export const LOOKAHEAD_DAYS = 21;
 const WEEK = ['日', '月', '火', '水', '木', '金', '土'];
 const norm = (text) => (text ?? '').normalize('NFKC').replace(/\s+/g, '');
 const soft = (text) => (text ?? '').normalize('NFKC').replace(/\s+/g, ' ').trim();
@@ -76,11 +78,49 @@ const DAY_TOKEN = '(?:[月火水木金土日](?:曜日?)?|祝前日?|祝祭?日?
 const DAY_RUN_SOURCE = `${DAY_TOKEN}(?:[・、,/~〜～-]?${DAY_TOKEN})*`;
 const DAY_RUN = new RegExp(DAY_RUN_SOURCE, 'g');
 // 曜日の字を含むが曜日ではない語。曜日を探す前に伏せる（「料金」の「金」を金曜にしない）
-const NOT_DAYS = /料金|代金|現金|税金|返金|入金|年金|賃金|集金|金額|本日|毎日|前日|当日|翌日|今日|明日|昨日|終日|後日|先日|連日|期日|日本|日中|日時|日程|日帰り|日替|毎月|今月|来月|先月|正月|年月|月額|月間|土地|土産|水道|火災|木材/g;
-// 「8月1日(土)」「2026/9/29」。曜日の括弧も日付の一部として扱う
-const DATE = /(?:(\d{4})[年/.])?(\d{1,2})[月/](\d{1,2})日?(?:\(([月火水木金土日])(?:曜日?)?(?:・?祝日?)?\))?/g;
+const NOT_DAYS = /料金|代金|現金|税金|返金|入金|年金|賃金|集金|金額|本日|毎日|前日|当日|翌日|今日|明日|昨日|終日|後日|先日|連日|期日|日本|日中|日時|日程|日帰り|日替|毎月|今月|来月|先月|正月|年月|月額|月間|土地|土産|水道|火災|木材|大晦日|晦日|月末|月初/g;
+// ---- 日付 ----
 
-const mask = (text) => text.replace(DATE, '#').replace(NOT_DAYS, (word) => '#'.repeat(word.length));
+const WEEKDAY = '(?:\\(([月火水木金土日])(?:曜日?)?(?:・?祝日?)?\\))?';
+// 「8月1日(土)」「2026/9/29」「2026年12月29日」。曜日の括弧も日付の一部として扱う
+const DATE = new RegExp(`(?:(\\d{4})[年/.])?(\\d{1,2})([月/])(\\d{1,2})日?${WEEKDAY}`, 'g');
+// 月の付いた日付のすぐ後に「・」「、」「と」「～」で続く月のない日（「12月30日(水)・31日(木)」「1月1日(金)～3日(日)」）。
+// 「12/30・31」の形は「日」がなくても読む
+const NEXT_DAY = new RegExp(`^(\\s*(?:[・、,と&＆~〜～\\-－]|から|より)\\s*)(\\d{1,2})日${WEEKDAY}`);
+const NEXT_SLASH_DAY = new RegExp(`^(\\s*(?:[・、,と&＆~〜～\\-－]|から|より)\\s*)(\\d{1,2})日?(?![\\d/月:時名人円分歳回枚])${WEEKDAY}`);
+// 上の形で読めない、月だけ・日だけの日付（「12月中は」「31日は」）。期間を決められないので読めない告知とする
+const LOOSE_DATE = /(?<![\d/.])\d{1,2}月(?![\d額間])|(?<![\d/.])\d{1,2}日(?!間|前|後|以内|以上|未満|目|中|分|毎|ごと|\d)/;
+
+// 文の中の日付。{ year, month, day, weekday, start, end } の配列（月のない日は前の日付の年・月を引き継ぐ）
+function dateTokens(text) {
+  const tokens = [];
+  for (const match of text.matchAll(DATE)) {
+    let date = { year: match[1] ? Number(match[1]) : 0, month: Number(match[2]), day: Number(match[4]),
+      weekday: match[5], start: match.index, end: match.index + match[0].length };
+    tokens.push(date);
+    const pattern = match[3] === '/' ? NEXT_SLASH_DAY : NEXT_DAY;
+    for (let next = pattern.exec(text.slice(date.end)); next; next = pattern.exec(text.slice(date.end))) {
+      const start = date.end + next[1].length;
+      date = { year: date.year, month: date.month, day: Number(next[2]), weekday: next[3], start, end: date.end + next[0].length };
+      tokens.push(date);
+    }
+  }
+  return tokens.filter((date) => date.month >= 1 && date.month <= 12 && date.day >= 1 && date.day <= 31);
+}
+
+// 日付の部分を「#」に置き換える
+function maskDates(text) {
+  let out = '';
+  let cursor = 0;
+  for (const date of dateTokens(text)) {
+    if (date.start < cursor) continue;
+    out += `${text.slice(cursor, date.start)}#`;
+    cursor = date.end;
+  }
+  return out + text.slice(cursor);
+}
+
+const mask = (text) => maskDates(text).replace(NOT_DAYS, (word) => '#'.repeat(word.length));
 
 // 文の中の曜日の並び。{ text, days(Set | null) } の配列。曜日の集まりとして読めない語（「平日」など）は days が null
 function dayRuns(masked) {
@@ -139,9 +179,9 @@ function lastEntryOf(texts, start) {
 
 // ---- 1 人の追加料金 ----
 
-const SOLO_WORD = /(?:1名|1人|一人|ひとり)様?/;
-// 「お一人様30分料金」は 1 人あたりの金額という意味で、1 人で使うときの条件ではない
-const PER_PERSON = /お?(?:一人|ひとり)様(?:30分|\d+時間|フリータイム|パック|・|昼|夜|夕方|深夜)*料金/g;
+const SOLO_WORD = /(?<!\d)(?:1名|1人|一人|ひとり)様?/;
+// 「お一人様30分料金」「1名様あたり」は 1 人あたりの金額という意味で、1 人で使うときの条件ではない
+const PER_PERSON = /お?(?:一人|ひとり)様(?:30分|\d+時間|フリータイム|パック|・|昼|夜|夕方|深夜)*料金|(?<!\d)(?:1名|1人|一人|ひとり)様?(?:あたり|当たり|につき)/g;
 // 「上記は2名様以上で御利用頂く料金」「おひとり様…店舗まで直接お問合せ」。店全体で 1 人の金額を出さない
 const GROUP_ONLY = /(?<!\d)[2-9]名様?以上|(?:1名|1人|一人|ひとり)様?[^。]{0,40}?(?:問い?合わ?せ|問合せ)/;
 const SOLO = '(?:1名|1人|一人|ひとり)様?の?ご?';
@@ -313,9 +353,17 @@ function readSection(section) {
 
 // ---- 期間料金の告知 ----
 
-const PERIOD_WORDS = /年末年始|年末|年始|正月|大晦日|お盆|夏季|冬季|夏期|冬期|春休み|夏休み|冬休み|GW|ゴールデンウィーク|シルバーウィーク|連休|繁忙期|特別料金|特別期間|期間限定|期間中|期間料金|期間の料金|料金改定|価格改定|改定|値上げ|値下げ|新料金|表示料金|料金変更|クリスマス/g;
-// アプリの注意書き（「年末年始」の記載あり…）に出す語
-const ALERT_WORDS = /年末年始|年末|年始|正月|大晦日|お盆|夏季|冬季|夏期|冬期|GW|ゴールデンウィーク|シルバーウィーク|繁忙期|特別料金|特別期間|料金改定|価格改定|新料金|クリスマス/g;
+const PERIOD_SOURCE = '年末年始|年末|年始|正月|大晦日|元日|元旦|三が日|お盆|夏季|冬季|夏期|冬期|春休み|夏休み|冬休み|GW|ゴールデンウィーク|シルバーウィーク|連休|繁忙期|特別料金|特別期間|期間限定|期間中|期間料金|期間の料金|料金改定|価格改定|改定|値上げ|値下げ|新料金|表示料金|料金変更|クリスマス|特定日|特別日|料金が異な|料金は異な|異なる料金';
+const PERIOD_WORDS = new RegExp(PERIOD_SOURCE);
+// 季節の語。過ぎた告知の「＜夏季期間の料金はこちら＞」を、同じ見出しの過ぎた告知と同じものとみなすのに使う
+const SEASONS = /年末年始|年末|年始|正月|大晦日|元日|元旦|三が日|お盆|夏季|冬季|夏期|冬期|春休み|夏休み|冬休み|GW|ゴールデンウィーク|シルバーウィーク|連休|繁忙期|クリスマス/g;
+// 日付のすぐ後に続く期間の語（「～9月6日(日)は夏季料金」の「は夏季」、「は年末年始特別料金」の「は年末年始特別料金」）
+const ATTACHED = new RegExp(`^\\s*(?:の期間は|期間は|の間は|には|は|の)?\\s*(?:${PERIOD_SOURCE})(?:[のは・]?(?:${PERIOD_SOURCE}))*`);
+// 日付の間の「～」。「12月29日～翌1月3日」も期間にする
+const RANGE_JOIN = /^\s*(?:[~〜～\-－]|から|より)\s*(?:翌年?)?\s*$/;
+const LIST_JOIN = /^\s*(?:[・、,と&＆~〜～\-－]|から|より)\s*(?:翌年?)?\s*$/;
+// 告知を文に分ける。メガビッグは 1 つの見出しに <br> で複数の告知を並べ、「＜…の料金はこちら＞」のリンクを添える
+const SENTENCE_END = /[。！!？?※＜＞<>\n]/;
 const TAX_EXCLUDED = /税別|税抜|外税|\+税/;
 const PRICE_FILE = /\.(?:pdf|png|jpe?g|gif|webp|svg)(?:[?#].*)?$/i;
 
@@ -331,18 +379,25 @@ function candidates(date, today) {
   return [year - 1, year, year + 1].map((y) => utcDay(y, date.month, date.day)).filter((day) => day !== null);
 }
 
-// 年か曜日が書いてある日付は、それに合う年に決める（3 年の間で同じ日付の曜日は重ならない）。合わなければ null
-function fixed(date, today) {
-  const list = candidates(date, today)
-    .filter((day) => !date.weekday || WEEK[new Date(day * DAY_MS).getUTCDay()] === date.weekday);
-  return list.length === 1 ? list[0] : null;
+const nearest = (list, today) => [...list].sort((a, b) => Math.abs(a - today) - Math.abs(b - today))[0] ?? null;
+const weekdayOf = (day) => WEEK[new Date(day * DAY_MS).getUTCDay()];
+
+// 年か曜日が書いてある日付の日番号。年がなければ今日にいちばん近い年に置き、曜日がその年の暦に合わなければ null。
+// 去年の曜日のまま今年も出した告知（「12月28日(日)～」を 2026 年に出す）を、去年の告知と読まないため。
+// 年も曜日もなければ undefined（期間のもう一方の日付から決める）
+function resolve(date, today) {
+  if (date.year) {
+    const day = utcDay(date.year, date.month, date.day);
+    return day !== null && (!date.weekday || weekdayOf(day) === date.weekday) ? day : null;
+  }
+  if (!date.weekday) return undefined;
+  const day = nearest(candidates(date, today), today);
+  return day !== null && weekdayOf(day) === date.weekday ? day : null;
 }
 
-const nearest = (list, today) => [...list].sort((a, b) => Math.abs(a - today) - Math.abs(b - today))[0] ?? null;
-
 function rangeOf(first, second, today) {
-  let from = first.weekday || first.year ? fixed(first, today) : undefined;
-  let to = second.weekday || second.year ? fixed(second, today) : undefined;
+  let from = resolve(first, today);
+  let to = resolve(second, today);
   if (from === null || to === null) return null;
   if (from === undefined && to === undefined) from = nearest(candidates(first, today), today);
   if (from === undefined) from = candidates(first, today).filter((day) => day <= to).pop();
@@ -351,78 +406,118 @@ function rangeOf(first, second, today) {
   return [from, to];
 }
 
-// 文の中の日付から期間を読む。[開始, 終了] の配列。読めない日付は null
+// 文の中の日付から期間を読む。[開始, 終了] の配列。読めない日付は null。
+// 「X まで」だけの告知は、表示中の料金の期限か期間料金の終わりかを読み分けられないので、載っている間はずっと続くもの
+// （[-∞, ∞]）とする。「X～」だけの告知は [X, ∞]
 export function noticeWindows(text, today) {
   const t = soft(text);
-  const dates = [...t.matchAll(DATE)]
-    .map((m) => ({ year: m[1] ? Number(m[1]) : 0, month: Number(m[2]), day: Number(m[3]), weekday: m[4],
-      start: m.index, end: m.index + m[0].length }))
-    .filter((date) => date.month >= 1 && date.month <= 12 && date.day >= 1 && date.day <= 31);
+  const dates = dateTokens(t);
   const windows = [];
+  if (LOOSE_DATE.test(maskDates(t))) windows.push(null);
   for (let index = 0; index < dates.length; index += 1) {
     const date = dates[index];
     const next = dates[index + 1];
     const after = t.slice(date.end, next ? next.start : t.length);
-    if (next && /^\s*(?:[~〜～\-－]|から|より)\s*$/.test(after)) {
+    if (next && RANGE_JOIN.test(after)) {
       windows.push(rangeOf(date, next, today));
       index += 1;
       continue;
     }
-    const day = date.weekday || date.year ? fixed(date, today) : nearest(candidates(date, today), today);
+    const known = resolve(date, today);
+    const day = known === undefined ? nearest(candidates(date, today), today) : known;
     if (day === null) windows.push(null);
     else if (/^\s*(?:[~〜～]|から|より|以降)/.test(after)) windows.push([day, Infinity]);
-    else if (/^\s*(?:まで|迄)/.test(after)) {
-      // 「表示料金は11月27日(金)まで」は、その翌日から別の料金になるという告知
-      const before = t.slice(Math.max(0, date.start - 15), date.start);
-      windows.push(/表示|上記|通常|現在|こちら|この/.test(before) ? [day + 1, Infinity] : [-Infinity, day]);
-    } else windows.push([day, day]);
+    else if (/^\s*(?:まで|迄)/.test(after)) windows.push([-Infinity, Infinity]);
+    else windows.push([day, day]);
   }
   return windows;
 }
 
-// 告知の文を見て、店ごと出さないかを決める。{ reason } か { alerts }
+// 日付と、日付のすぐ後の期間の語を取り除いた残り
+function residue(text) {
+  const t = soft(text);
+  const dates = dateTokens(t);
+  let out = '';
+  let cursor = 0;
+  for (let index = 0; index < dates.length; index += 1) {
+    const date = dates[index];
+    if (date.start < cursor) continue;
+    out += t.slice(cursor, date.start);
+    cursor = date.end;
+    const next = dates[index + 1];
+    const after = t.slice(cursor, next ? next.start : t.length);
+    if (next && LIST_JOIN.test(after)) continue; // 日付の並びの途中
+    cursor += ATTACHED.exec(after)?.[0].length ?? 0;
+  }
+  return out + t.slice(cursor);
+}
+
+// 告知の文を見て、店ごと出さないかを決める。出さないなら { reason }
 function periodNotice(blocks, today) {
-  const alerts = new Set();
   for (const block of blocks) {
     const text = soft(block);
     if (!text) continue;
     if (TAX_EXCLUDED.test(text)) return { reason: 'tax-excluded' };
-    const words = text.match(PERIOD_WORDS) ?? [];
-    const windows = noticeWindows(text, today);
-    if (!windows.length) {
-      if (words.length) return { reason: 'period-notice' }; // 期間の分からない告知
-      continue;
+    const past = new Set();
+    const pointers = [];
+    for (const sentence of text.split(SENTENCE_END).map((part) => part.trim()).filter(Boolean)) {
+      const windows = noticeWindows(sentence, today);
+      if (!windows.length) {
+        if (!PERIOD_WORDS.test(sentence)) continue;
+        // 「＜夏季期間の料金はこちら＞」は、同じ見出しの過ぎた告知のリンクなら無視する（下で確かめる）
+        if (/こちら/.test(sentence)) { pointers.push(sentence); continue; }
+        return { reason: 'period-notice' }; // 期間の分からない告知
+      }
+      if (windows.some((window) => window === null)) return { reason: 'period-notice' };
+      // 今日以降と重なる告知は、先の告知でも出さない（アプリは先の日付を選べ、一覧に注意書きが出ないため）
+      if (windows.some(([, to]) => to >= today)) return { reason: 'period-notice' };
+      // 過ぎた告知。日付のすぐ後の期間の語のほかに期間の語が残れば、別の告知が同じ文にあるとみなす
+      if (PERIOD_WORDS.test(residue(sentence))) return { reason: 'period-notice' };
+      for (const word of sentence.match(SEASONS) ?? []) past.add(word);
     }
-    if (windows.some((window) => window === null)) return { reason: 'period-notice' };
-    if (windows.some(([from, to]) => from <= today + LOOKAHEAD_DAYS && to >= today)) return { reason: 'period-notice' };
-    if (windows.every(([, to]) => to < today)) continue; // 過ぎた告知は無視する
-    for (const word of text.match(ALERT_WORDS) ?? []) alerts.add(word);
+    for (const pointer of pointers) {
+      const rest = pointer.replace(SEASONS, (word) => (past.has(word) ? '' : word)).replace(/期間(?:の)?料金|期間/g, '');
+      if (PERIOD_WORDS.test(rest)) return { reason: 'period-notice' };
+    }
   }
-  return { alerts: [...alerts] };
+  return {};
 }
 
-// 表の外の文（見出し・お知らせ）に、日付のない曜日の語があれば読めない条件とみなす
+// 表の外の文（見出し・お知らせ）に、曜日の語があれば読めない条件とみなす（日付の曜日の括弧は除く）
 function noticeDays(blocks) {
-  return blocks.some((block) => {
-    const text = norm(block);
-    return text.search(DATE) < 0 && dayRuns(mask(text)).length > 0;
-  });
+  return blocks.some((block) => dayRuns(mask(norm(block))).length > 0);
+}
+
+// 表の外の文に 1 人の料金の文があるか（「お一人様30分料金」は 1 人あたりの金額という意味なので除く）
+function soloNotice(blocks) {
+  return blocks.some((block) => SOLO_WORD.test(mask(norm(block).replace(PER_PERSON, '#'))));
 }
 
 // ---- 店 ----
 
+// 取得で捨てた表のうち、表はあるのに読めなかったもの（「1,400※」のような注記のあるセル、形の違う表）
+const SKIPPED_UNREAD = new Set(['price-cell', 'shape']);
+// 変換で読めなかった表のうち、注記のあるセルや見慣れない行（「年末年始」の行など）があるもの
+const TABLE_UNREAD = new Set(['price-cell', 'table']);
+
 // { regular, solo, week, alerts, dropped } か { reason, dropped } を返す。
 // options: { today, notices, links, skipped, missing, unread_tables }（update_megabig.py が保存した記録をそのまま渡してよい）
 export function convertMegabig(sections, hoursText, options = {}) {
-  const dropped = (options.skipped ?? []).map((item) => ({ plan: norm(item.time) || norm(item.title), reason: item.reason }));
+  const skipped = options.skipped ?? [];
+  const dropped = skipped.map((item) => ({ plan: norm(item.time) || norm(item.title), reason: item.reason }));
   if (options.missing) return { reason: `missing-${options.missing}`, dropped };
   if (options.unread_tables) return { reason: 'unread-table', dropped };
+  // 読めなかったセルの注記や表の形は、ほかの表にも効く条件（期間料金など）かもしれないので店ごと出さない
+  if (skipped.some((item) => SKIPPED_UNREAD.has(item.reason))) return { reason: 'unread-table', dropped };
   if ((options.links ?? []).some((href) => PRICE_FILE.test(String(href)))) return { reason: 'price-link', dropped };
   const today = jstDay(options.today);
   const list = sections ?? [];
   const notices = [...(options.notices ?? []), ...new Set(list.map((section) => section.heading ?? ''))];
-  const blocks = [...notices, ...(options.skipped ?? []).flatMap((item) => [item.time, item.title]),
-    ...list.flatMap((section) => [section.time, section.note])];
+  const skippedText = skipped.flatMap((item) => [item.time, item.title, item.note]);
+  const sectionText = list.flatMap((section) => [section.time, section.note]);
+  // 期間料金の告知は、表の外の文・捨てた表の備考・時間帯の欄・備考・表の見出しと行の名前から探す
+  const blocks = [...notices, ...skippedText, ...sectionText,
+    ...list.flatMap((section) => [...(section.header ?? []), ...(section.rows ?? []).map((row) => row?.[0])])];
   const notice = periodNotice(blocks, today);
   if (notice.reason) return { reason: notice.reason, dropped };
   if (noticeDays(notices)) return { reason: 'notice-days', dropped };
@@ -430,6 +525,8 @@ export function convertMegabig(sections, hoursText, options = {}) {
   if (!week) return { reason: 'no-hours', dropped };
 
   const read = list.map(readSection);
+  const unread = read.find((item) => TABLE_UNREAD.has(item.reason));
+  if (unread) return { reason: 'unread-table', dropped: [...dropped, { plan: unread.label, reason: unread.reason }] };
   // 備考の曜日が列の曜日で表せない表は、同じ曜日の列を持つ表も含めて出さない（列の曜日の書き間違いを疑う）
   const conflicts = new Set();
   for (const item of read) {
@@ -438,8 +535,9 @@ export function convertMegabig(sections, hoursText, options = {}) {
       conflicts.add(signature(item.table.columns));
     }
   }
-  const groupOnly = [...notices, ...list.flatMap((section) => [section.time, section.note])]
-    .some((text) => GROUP_ONLY.test(norm(text)));
+  // 「2名様以上の料金」「おひとり様は店舗へお問合せ」と、表の外の 1 人の料金の文は、店全体で 1 人の金額を決められないものとする
+  const groupOnly = soloNotice(notices)
+    || [...notices, ...skippedText, ...sectionText].some((text) => GROUP_ONLY.test(norm(text)));
   const slotPlans = [];
   const fixedPlans = [];
   const soloSlot = [];
@@ -485,7 +583,7 @@ export function convertMegabig(sections, hoursText, options = {}) {
     regular: tables(slotPlans, fixedPlans),
     solo: tables(soloSlot, soloFixed),
     week,
-    alerts: notice.alerts,
+    alerts: [],
     dropped,
   };
 }
