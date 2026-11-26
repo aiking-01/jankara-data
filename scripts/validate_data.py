@@ -390,7 +390,47 @@ def _maneki_raw(item, old, key, issues):
         issues.append(f"{key}: PDF の配布元が不正")
 
 
+JOYSOUND_SCOPE = "standard-rates-v2"
+# 料金を出さない状態（update_joysound_prices.py）。料金表を持たない
+JOYSOUND_NO_PRICE = ("contact", "season", "unparsed", "unverified")
+
+
+def _joysound_moment(value):
+    return value is None or (type(value) is int and value > 0)
+
+
 def _joysound_raw(item, key, issues):
+    page = item.get("page")
+    parsed = urlsplit(page or "")
+    if parsed.scheme != "https" or parsed.hostname != "shop.joysound.com" or not parsed.path.startswith("/shop/"):
+        issues.append(f"{key}: JOYSOUND 料金ページ URL が不正")
+    # 状態のない旧形式の記録は、期間告知・問い合わせ・飲み物の注記を確かめていないので通さない
+    if item.get("scope") != JOYSOUND_SCOPE:
+        issues.append(f"{key}: JOYSOUND の記録が旧形式です（状態を確かめていません）")
+        return
+    status = item.get("status")
+    notices = item.get("notices", [])
+    if not isinstance(notices, list) or any(
+        not isinstance(notice, dict) or not _joysound_moment(notice.get("from"))
+        or not _joysound_moment(notice.get("until")) for notice in notices
+    ):
+        issues.append(f"{key}: JOYSOUND の期間告知が不正")
+    if status in JOYSOUND_NO_PRICE:
+        if item.get("sections") != []:
+            issues.append(f"{key}: 料金なしの状態 ({status}) なのに料金表があります")
+        if status == "season" and not _joysound_moment(item.get("season_until")):
+            issues.append(f"{key}: 期間告知の終わりの日時が不正")
+        return
+    if status != "priced":
+        issues.append(f"{key}: JOYSOUND の状態が不正 {status!r}")
+        return
+    if "notices" not in item:
+        issues.append(f"{key}: JOYSOUND の期間告知を確かめていません")
+    notes = item.get("notes")
+    if not isinstance(notes, dict) or any(
+        not isinstance(lines, list) or any(not isinstance(line, str) for line in lines) for lines in notes.values()
+    ):
+        issues.append(f"{key}: JOYSOUND の注記が不正")
     sections = item.get("sections")
     if not isinstance(sections, list) or not sections:
         issues.append(f"{key}: JOYSOUND の料金表がありません")
@@ -427,10 +467,6 @@ def _joysound_raw(item, key, issues):
                 not isinstance(value, str) for value in drinks.values()
             ):
                 issues.append(f"{path}: 飲み物条件が不正")
-    page = item.get("page")
-    parsed = urlsplit(page or "")
-    if parsed.scheme != "https" or parsed.hostname != "shop.joysound.com" or not parsed.path.startswith("/shop/"):
-        issues.append(f"{key}: JOYSOUND 料金ページ URL が不正")
     if not valid_slot:
         issues.append(f"{key}: 通常の30分料金がありません")
 
