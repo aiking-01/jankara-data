@@ -1,4 +1,5 @@
-"""コート・ダジュールの取得（通信の失敗と料金なしの区別、ETag、巡回の打ち切り）を確かめる。通信はしない。"""
+"""コート・ダジュールの取得（通信の失敗と料金なしの区別、ETag、巡回の打ち切り、料金表が変わったときの確かめ直し）を
+確かめる。通信はしない。"""
 from __future__ import annotations
 
 import json
@@ -18,11 +19,17 @@ import validate_data  # noqa: E402
 
 FIXTURE = json.loads((Path(__file__).parent / "fixtures" / "cotedazur_prices.json").read_text(encoding="utf-8"))
 OFFICIAL = {key: FIXTURE["shops"]["cd-10101"][key] for key in ("shop_code", "shop_name", "price_plan")}
+# 11/26 に取った、年末年始の期間別の料金（17 期間）
+CASES = json.loads((Path(__file__).parent / "fixtures" / "cotedazur_cases.json").read_text(encoding="utf-8"))
+PERIODS = CASES["shops"]["cd-10122"]["price_plan"]
 IDS = ["cd-10101", "cd-10102", "cd-10103"]
 
 
-def official(shop_id: str) -> bytes:
-    return json.dumps({**OFFICIAL, "shop_code": int(shop_id.removeprefix("cd-"))}, ensure_ascii=False).encode()
+def official(shop_id: str, price_plan: list | None = None) -> bytes:
+    payload = {**OFFICIAL, "shop_code": int(shop_id.removeprefix("cd-"))}
+    if price_plan is not None:
+        payload["price_plan"] = price_plan
+    return json.dumps(payload, ensure_ascii=False).encode()
 
 
 def response(status: int = 200, body: bytes = b"", headers: dict | None = None, url: str = "") -> requests.Response:
@@ -194,6 +201,65 @@ class UpdateTest(unittest.TestCase):
         self.assertEqual(saved["shops"]["cd-10101"], self.old("cd-10101"))
         self.due.start()
 
+    def run_due(self, first: list[str], answers: dict) -> tuple[dict, FakeFetcher, mock.MagicMock]:
+        """1 回目の crawl_plan.due は first を返し、確かめ直しの 2 回目は渡された店をそのまま返す"""
+        self.due.stop()
+        calls = iter([lambda ids: first])
+        side = lambda ids, *args, **kwargs: next(calls, list)(ids)  # noqa: E731
+        with mock.patch.object(cote.crawl_plan, "due", side_effect=side) as due:
+            _, saved, fetcher = self.run_with(answers)
+        self.due.start()
+        return saved, fetcher, due
+
+    def test_changed_plan_rechecks_the_other_normal_shops_the_same_run(self):
+        # 3 日に 1 回のままだと、期間別の料金に切り替わった後も最長 3 日、前回の通常料金を配ってしまう
+        self.previous({shop_id: self.old(shop_id) for shop_id in IDS})
+        saved, fetcher, due = self.run_due(["cd-10101"], {
+            "cd-10101": response(200, official("cd-10101", PERIODS), {"ETag": '"new"'}),
+            "cd-10102": response(200, official("cd-10102", PERIODS), {"ETag": '"new"'}),
+            "cd-10103": response(304),
+        })
+        self.assertEqual([call[0] for call in fetcher.calls], IDS)
+        self.assertEqual(due.call_count, 2)  # 確かめ直しは 1 回だけ（cd-10102 も変わっているが、もう一度は呼ばない）
+        rest, *args = due.call_args.args
+        self.assertEqual(rest, ["cd-10102", "cd-10103"])
+        self.assertEqual(args[1], "source/cotedazur_prices.json")
+        self.assertTrue(due.call_args.kwargs["force"]("cd-10102"))
+        self.assertEqual(fetcher.calls[1][1]["If-None-Match"], '"old"')  # 変わっていなければ 304 で中身は受け取らない
+        self.assertEqual(len(saved["shops"]["cd-10102"]["price_plan"]), len(PERIODS))
+        self.assertEqual(saved["shops"]["cd-10103"]["etag"], '"old"')
+
+    def test_unchanged_plan_does_not_recheck(self):
+        self.previous({shop_id: self.old(shop_id) for shop_id in IDS})
+        for answer in (response(304), response(200, official("cd-10101"), {"ETag": '"regenerated"'})):
+            saved, fetcher, due = self.run_due(["cd-10101"], {"cd-10101": answer})
+            self.assertEqual([call[0] for call in fetcher.calls], ["cd-10101"])
+            self.assertEqual(due.call_count, 1)
+
+    def test_recheck_only_shops_that_get_prices(self):
+        # 期間別の料金の店と料金なしの店は配られないので、確かめ直さない（3 日に 1 回のまま）
+        periods = {**self.old("cd-10102"), "price_plan": PERIODS}
+        gone = cote.no_price("cd-10103", {"url": "https://www.cotedazur.jp/"}, "公式の料金JSONなし")
+        self.previous({"cd-10101": self.old("cd-10101"), "cd-10102": periods, "cd-10103": gone})
+        _, fetcher, due = self.run_due(["cd-10101"], {"cd-10101": response(404, b"<html></html>")})
+        self.assertEqual([call[0] for call in fetcher.calls], ["cd-10101"])
+        self.assertEqual(due.call_count, 1)
+        # 期間別の料金の店が変わっても、通常料金の店は確かめ直す
+        self.previous({"cd-10101": self.old("cd-10101"), "cd-10102": periods, "cd-10103": gone})
+        _, fetcher, due = self.run_due(["cd-10102"], {
+            "cd-10102": response(200, official("cd-10102", PERIODS[:3]), {"ETag": '"new"'}),
+            "cd-10101": response(304),
+        })
+        self.assertEqual([call[0] for call in fetcher.calls], ["cd-10102", "cd-10101"])
+
+    def test_deliverable_is_a_single_normal_period(self):
+        self.assertTrue(cote.deliverable(self.old("cd-10101")))
+        self.assertTrue(cote.deliverable({"price_plan": [{"label_name": "通常料金 "}]}))
+        self.assertFalse(cote.deliverable({"price_plan": PERIODS}))
+        self.assertFalse(cote.deliverable({"price_plan": [PERIODS[1]]}))
+        self.assertFalse(cote.deliverable({"price_plan": [], "no_price": "x"}))
+        self.assertFalse(cote.deliverable(None))
+
     def test_stops_after_failures_in_a_row(self):
         ids = [f"cd-{10101 + i}" for i in range(8)]
         shops = [{"id": shop_id, "chain": "コート・ダジュール", "name": shop_id, "url": "https://www.cotedazur.jp/"}
@@ -224,6 +290,24 @@ class UpdateTest(unittest.TestCase):
 
 
 class ValidateTest(unittest.TestCase):
+    def test_built_record_with_the_official_json_is_checked_as_built(self):
+        # 配信ファイルの形は今までどおり price_plan も入れる。そのときも切り替え時刻の検査をする
+        built = {**OFFICIAL, "shop_code": 10150, "checked_at": 1}
+        for kind in ("regular", "solo"):
+            built[kind] = [{"band": "通常料金", "customers": ["会員"], "plans": [
+                {"name": "30分", "hours": "開店～18:00", "days": [{"day": "月火水木", "prices": {"会員": 300}}]},
+                {"name": "30分", "hours": "18:00～閉店", "days": [{"day": "月火水木", "prices": {"会員": 460}}]},
+            ]}]
+        raw = {"cd-10150": {"price_plan": [{"switching_time": "18:00:00"}]}}
+        with mock.patch.object(validate_data, "_cotedazur_raw", return_value=raw):
+            issues = []
+            validate_data._cotedazur_prices(built, built, "cd-10150", issues)
+            self.assertEqual(issues, [])
+            raw["cd-10150"]["price_plan"][0]["switching_time"] = "17:00:00"
+            validate_data._cotedazur_prices(built, built, "cd-10150", issues)
+            self.assertEqual(issues, ["cd-10150: 昼夜の切り替え時刻が元データと一致しません"])
+
+
     def test_no_price_record_is_accepted_and_skips_the_drop_check(self):
         issues = []
         record = cote.no_price("cd-10457", {"name": "店", "url": "https://www.cotedazur.jp/"}, "公式の料金JSONなし")

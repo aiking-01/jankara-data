@@ -297,7 +297,9 @@ export function convertCotedazur(shop, { today } = {}) {
 /**
  * 一部の店舗で公式JSONの形式が変わっても、正常な店舗の料金は維持する。
  * 大量脱落は配信事故として拒否し、旧データを残す。
- * 配るのはアプリが使う regular / solo と確認日時だけ（公式JSONそのものは配らない）。
+ * 配信ファイルの形（公式JSONの店舗コード・店舗名・price_plan も入れる）は今までどおりにする。アプリが使うのは
+ * regular / solo だけだが、項目を外すと validate_data.py の「変更店舗が35%を超える」が全店に当たり、
+ * --repair なしの検査（data-safety.yml）が通らなくなるため。
  */
 export function convertCotedazurShops(records, minimumRatio = 0.9, { today } = {}) {
   if (!records || typeof records !== 'object' || Array.isArray(records)) {
@@ -309,8 +311,9 @@ export function convertCotedazurShops(records, minimumRatio = 0.9, { today } = {
   const rejected = [];
   for (const [id, shop] of Object.entries(records)) {
     try {
-      const { regular, solo } = convertCotedazur(shop, { today: iso });
-      shops[id] = { checked_at: shop.checked_at, regular, solo };
+      const converted = convertCotedazur(shop, { today: iso });
+      const { page, etag, last_modified, checked_at, ...officialData } = shop;
+      shops[id] = { ...officialData, ...converted, checked_at };
     } catch (error) {
       rejected.push({ id, reason: String(error?.message ?? error) });
     }

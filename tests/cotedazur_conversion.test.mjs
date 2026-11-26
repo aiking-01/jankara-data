@@ -44,11 +44,14 @@ test('公式JSONの見本の店がすべて変換できる', () => {
   assert.deepEqual(result.rejected, []);
 });
 
-test('配るのはアプリが使う料金表と確認日時だけで、公式JSONそのものは配らない', () => {
+test('配信ファイルの形は今までどおり（取得の記録は入れない）', () => {
+  // 項目を外すと validate_data.py の「変更店舗が35%を超える」が全店に当たるので、形は変えない
   const result = convertCotedazurShops(data.shops, 0.9, { today: TODAY });
   for (const [key, shop] of Object.entries(result.shops)) {
-    assert.deepEqual(Object.keys(shop).sort(), ['checked_at', 'regular', 'solo'], key);
+    assert.deepEqual(Object.keys(shop).sort(),
+      ['checked_at', 'price_plan', 'regular', 'shop_code', 'shop_name', 'solo'], key);
     assert.equal(shop.checked_at, data.shops[key].checked_at);
+    assert.deepEqual(shop.price_plan, data.shops[key].price_plan);
   }
 });
 

@@ -491,9 +491,12 @@ def _cotedazur_built(item, key, issues):
 
 
 def _cotedazur_prices(item, old, key, issues):
-    if "price_plan" not in item and ("regular" in item or "solo" in item):
+    # 配る側（build）の記録は、公式JSONの price_plan と一緒に regular / solo を持つ。形を確かめてから、
+    # price_plan は元データと同じく確かめる
+    if "regular" in item or "solo" in item:
         _cotedazur_built(item, key, issues)
-        return
+        if "price_plan" not in item:
+            return
     if not key.startswith("cd-") or type(item.get("shop_code")) is not int or str(item["shop_code"]) != key.removeprefix("cd-"):
         issues.append(f"{key}: 店舗コードと料金IDが一致しません")
     if not _string(item.get("shop_name"), 120):
