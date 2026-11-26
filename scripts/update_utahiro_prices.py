@@ -223,7 +223,10 @@ def fetch(fetcher: net.Fetcher, url: str, now: int) -> dict:
     if status != 200:
         raise requests.HTTPError(f"HTTP {status}")
     response.encoding = "utf-8"
-    return parse_page(url, response.text, now)
+    try:
+        return parse_page(url, response.text, now)
+    except Exception as error:  # noqa: BLE001 ページは取れたのに読めない。前回の金額は残さない
+        return no_prices(url, now, f"読めないページ ({type(error).__name__})")
 
 
 def official(url) -> bool:

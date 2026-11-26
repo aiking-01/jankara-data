@@ -236,6 +236,15 @@ class UpdateTests(unittest.TestCase):
         record = self.saved()["shops"]["uh-1"]
         self.assertEqual((record["bands"], record["checked_at"]), ([], NOW))
 
+    def test_page_that_cannot_be_read_is_saved_without_prices(self):
+        self.previous({"uh-1": dict(RECORDS["uh-1"], checked_at=100)})
+        with mock.patch.object(uh, "price_area", side_effect=AttributeError("壊れたページ")):
+            ok, _ = self.run_update(self.ok_answers())
+        self.assertTrue(ok)
+        record = self.saved()["shops"]["uh-1"]
+        self.assertEqual((record["bands"], record["missing"], record["checked_at"]),
+                         ([], "読めないページ (AttributeError)", NOW))
+
     def test_throttled_crawl_stops_and_keeps_the_rest(self):
         old = {key: dict(RECORDS[key], checked_at=100) for key in SAVED}
         self.previous(old)
