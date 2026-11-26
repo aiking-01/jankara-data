@@ -139,6 +139,7 @@ test('期間の告知は、今日から21日先までと重なるときだけ読
   // 終わりの日が読めない告知は出さない側に倒す
   assert.throws(() => convert(noticed('12月1日より料金を改定いたします。')), /終わりの日を読めません/);
   assert.throws(() => convert(noticed('年末年始は特別料金となります。')), /期間を読めません/);
+  assert.throws(() => convert(noticed('クリスマスと繁忙日は料金が異なります。')), /期間を読めません/);
   const later = noticed('2026年12月26日から特別料金です。');
   assert.ok(convert(later, '2026-11-26').regular.length); // 始まりが 21 日先より後
   assert.throws(() => convert(later, '2026-12-10'), /終わりの日を読めません/);
