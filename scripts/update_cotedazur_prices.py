@@ -5,6 +5,9 @@
 料金表を表示するため、その同じJSONを店舗IDごとに保存する。
 
 - 店ごとに 3 日に 1 回、古い順に取る（crawl_plan.py）。前回と同じ JSON なら ETag で中身を受け取らない。
+- 取った店のどれかで公式の料金表が変わっていたら、そのほかの「通常料金」1 期間の店（アプリに金額を配る店）も
+  その回のうちに取り直す。公式は年末年始などの期間別の料金に全店そろって切り替えるので、3 日に 1 回のままだと
+  切り替わった後も最長 3 日、前回の通常料金を配ってしまうため。
 - タイムアウト、接続エラー、本文の欠け（Content-Length と長さが違う）は net.Fetcher が新しい接続で読み直す。
   それでもだめなとき、5xx、途中で切れた JSON は通信の失敗として前回の記録を残す
   （確かめた日時は進まないので、14 日で publish.py が配らなくなる）。通信の失敗が 5 店続いたら残りは取らない。
@@ -36,6 +39,7 @@ USER_AGENT = "karaoke-auto-getter/1.0 (public price data; GitHub Actions)"
 DELAY = 1.0
 THROTTLED_CODES = (403, 429, 503)
 MAX_STREAK = 5  # 通信の失敗がこの店数続いたら、残りの店は今回は取らない
+SOURCE = "source/cotedazur_prices.json"  # crawl_plan.py と seen.json での名前
 SCHEMA_VERSION = 1
 PRICE_GROUPS = ("noon_weekday", "noon_weekend", "night_weekday", "night_weekend")
 PRICE_FIELD = re.compile(r"(?:_30|_tax|_normal|_student|_ordinary)$|^ftfd_")
@@ -122,6 +126,18 @@ def validate_payload(shop_id: str, payload: dict) -> None:
         raise ValueError("30分料金がありません")
 
 
+def deliverable(record: dict | None) -> bool:
+    """変換（web/cotedazur.js）が金額を配りうる記録か。「通常料金」1 期間の店だけが配られる。"""
+    plans = (record or {}).get("price_plan")
+    return (isinstance(plans, list) and len(plans) == 1 and isinstance(plans[0], dict)
+            and unicodedata.normalize("NFKC", str(plans[0].get("label_name", ""))).strip() == "通常料金")
+
+
+def plan_changed(old: dict | None, record: dict) -> bool:
+    """料金を読めていた店の料金表（price_plan）が、今回取ったもので変わったか。"""
+    return bool(old and old.get("price_plan")) and record.get("price_plan") != old.get("price_plan")
+
+
 def save(shops: dict, updated_at: int) -> None:
     payload = {"schema_version": SCHEMA_VERSION, "updated_at": updated_at,
                "shops": dict(sorted(shops.items()))}
@@ -201,42 +217,57 @@ def update(log=print) -> bool:
     current = {shop_id: previous[shop_id] for shop_id in shops if shop_id in previous}
     now = int(time.time())
     # 店ごとに 3 日に 1 回、古い順に取る（crawl_plan.py）
-    due = crawl_plan.due(list(shops), previous.get, "source/cotedazur_prices.json", now)
+    queue = crawl_plan.due(list(shops), previous.get, SOURCE, now)
     fetcher = net.Fetcher(USER_AGENT, label="コート・ダジュール")
     verified = unsupported = failures = streak = 0
     stopped = ""
-    for index, shop_id in enumerate(due):
+    rechecked = False
+    index = 0
+    while index < len(queue):
+        shop_id = queue[index]
         if streak >= MAX_STREAK:
-            stopped = f"通信の失敗が {streak} 店続いたので、残りの {len(due) - index} 店は今回は取りません"
-            failures += len(due) - index
+            stopped = f"通信の失敗が {streak} 店続いたので、残りの {len(queue) - index} 店は今回は取りません"
+            failures += len(queue) - index
             break
         old = previous.get(shop_id)
         try:
             record = fetch_one(fetcher, shop_id, shops[shop_id], old)
         except net.OutOfTime:
-            stopped = f"締め切りを過ぎたので、残りの {len(due) - index} 店は今回は取りません"
+            stopped = f"締め切りを過ぎたので、残りの {len(queue) - index} 店は今回は取りません"
             break
         except Throttled as error:
-            stopped = f"公式サイトの制限で停止 ({error})。残りの {len(due) - index} 店は今回は取りません"
-            failures += len(due) - index
+            stopped = f"公式サイトの制限で停止 ({error})。残りの {len(queue) - index} 店は今回は取りません"
+            failures += len(queue) - index
             break
         except requests.RequestException as error:
             failures += 1
             streak += 1
+            index += 1
             log(f"  取得失敗、前回の記録を残します {shop_id} ({type(error).__name__}: {error})")
             continue
         streak = 0
+        index += 1
         current[shop_id] = record
         if record.get("no_price"):
             unsupported += 1
             log(f"  料金なし {shop_id} ({record['no_price']})")
         else:
             verified += 1
+        if not rechecked and plan_changed(old, record):
+            # 公式の料金表が変わった。期間別の料金への切り替えは全店そろって起きるので、金額を配っている
+            # 「通常料金」1 期間の店を今回のうちに確かめ直す（変わっていなければ 304 で中身は受け取らない）。
+            # 失敗が続いて間をあけている店は crawl_plan.py が外す
+            rechecked = True
+            rest = [key for key in shops if key not in queue and deliverable(current.get(key))]
+            more = crawl_plan.due(rest, previous.get, SOURCE, now, force=lambda key: True) if rest else []
+            if more:
+                log(f"  {shop_id} の料金表が変わったので、通常料金の {len(more)} 店も今回確かめます")
+                queue = queue + [key for key in more if key not in queue]
     if stopped:
         log(f"  {stopped}")
     complete = not failures and not stopped
     save(current, int(time.time()) if complete else previous_doc["updated_at"])
-    log(f"コート・ダジュール: {len(current)}/{len(shops)} 店 (今回 {len(due)} 店: 確認 {verified}、料金なし {unsupported}、"
+    log(f"コート・ダジュール: {len(current)}/{len(shops)} 店 (今回 {len(queue)} 店: 確認 {verified}、料金なし {unsupported}、"
         f"失敗 {failures}、通信 {fetcher.bytes / 1e6:.1f}MB)")
     return failures == 0
 
