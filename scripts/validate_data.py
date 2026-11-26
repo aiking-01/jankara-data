@@ -63,6 +63,14 @@ PRICE_TEXT = re.compile(r"^(?:[¥￥]?\s*)?(\d{1,3}(?:,\d{3})*|\d+)(?:\s*円)?$"
 MINIMUM_PRICE_TEXT = re.compile(r"^[¥￥]\s*(\d[\d,]*)~$")
 UTAHIRO_PAGE = re.compile(r"^/shops/st_[a-z0-9_]+/\d+$")
 WEEK_KEYS = {"月", "火", "水", "木", "金", "土", "日", "祝前", "日祝"}
+# JOYJOY の最低価格としてありうる範囲（update_joyjoy_prices.py と scripts/web/joyjoy.js と同じ）
+JOYJOY_SLOT_YEN = (80, 1000)
+JOYJOY_FREE_YEN = (300, 5000)
+JOYJOY_CHARGES = {"daytime": "お一人様 30分", "nighttime": "お一人様 30分", "freetime": "お一人様 室料"}
+JOYJOY_NOTE = "※曜日・人数・時期により、料金が変動致します。詳しくは直接店舗にお問い合わせください。"
+JOYJOY_INCLUDED = re.compile(r"☆(?:(?:昼|夜|深夜)\d{1,2}時間フリーは)?ジュース(?:・カクテル・(?:サワー|チューハイ)・ハイボール各種)?"
+                             r"飲み放題付き(?: ※土曜・特日を除く)?")
+JOYJOY_DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
 COTE_PRICE_FIELD = re.compile(r"(?:_30|_tax|_normal|_student|_ordinary)$|^ftfd_")
 COTE_PRICE_GROUPS = ("noon_weekday", "noon_weekend", "night_weekday", "night_weekend")
 MAX_ISSUES = 40
@@ -716,9 +724,25 @@ def _joyjoy(item, old, key, issues, *, require_checked_at=False):
     if require_checked_at and (type(checked) is not int or checked <= 0):
         issues.append(f"{key}: checked_at が不正")
     rates = item.get("rates")
+    withdrawn = item.get("withdrawn")
+    # ページは取れたが料金を出せない店（料金なし）。前回の最低価格を残さない記録なので受け入れる
+    if rates == [] and require_checked_at:
+        if not _string(withdrawn, 200):
+            issues.append(f"{key}: JOYJOY料金なしの理由が不正")
+        return
+    if withdrawn is not None:
+        issues.append(f"{key}: 料金なしの理由があるのに料金があります")
     if not isinstance(rates, list) or len(rates) != 3:
         issues.append(f"{key}: JOYJOY料金区分が不正")
         return
+    notices = item.get("notices", [])
+    if not isinstance(notices, list) or len(notices) > 20 or any(
+            not isinstance(notice, dict) or not _string(notice.get("text"), 200)
+            or any(notice.get(side) is not None and not (isinstance(notice.get(side), str)
+                                                       and JOYJOY_DAY.fullmatch(notice[side]))
+                   for side in ("from", "until"))
+            for notice in notices):
+        issues.append(f"{key}: JOYJOY期間の告知の形式が不正")
     seen = set()
     values = {}
     for ri, rate in enumerate(rates):
@@ -732,7 +756,7 @@ def _joyjoy(item, old, key, issues, *, require_checked_at=False):
             continue
         seen.add(period)
         expected_unit = "per_person_per_freetime" if period == "freetime" else "per_person_30_minutes"
-        if rate.get("unit") != expected_unit or not _string(rate.get("charge"), 60):
+        if rate.get("unit") != expected_unit or rate.get("charge") != JOYJOY_CHARGES[period]:
             issues.append(f"{path}: 利用単位が不正")
         windows = rate.get("windows")
         if not isinstance(windows, list) or not 1 <= len(windows) <= 4:
@@ -746,8 +770,8 @@ def _joyjoy(item, old, key, issues, *, require_checked_at=False):
             if period == "freetime" and window.get("days") and not _string(window.get("days"), 100):
                 issues.append(f"{wp}: 曜日区分が不正")
             amount = window.get("minimum_yen")
-            bound = 30000 if period == "freetime" else 2000
-            if type(amount) is not int or not 1 <= amount <= bound:
+            low, high = JOYJOY_FREE_YEN if period == "freetime" else JOYJOY_SLOT_YEN
+            if type(amount) is not int or not low <= amount <= high:
                 issues.append(f"{wp}: 最低価格が不正 ({amount!r})")
             display = window.get("price_text")
             if not _string(display, 40):
@@ -758,15 +782,22 @@ def _joyjoy(item, old, key, issues, *, require_checked_at=False):
                     issues.append(f"{wp}: 公式表記と最低価格が一致しません")
             values[(period, window.get("days", ""), window.get("hours", ""))] = amount
         included = rate.get("included", [])
-        if not isinstance(included, list) or any(not _string(text, 180) for text in included):
-            issues.append(f"{path}: 付帯サービスの説明が不正")
+        if not isinstance(included, list) or any(not isinstance(text, str) or not JOYJOY_INCLUDED.fullmatch(text)
+                                                 for text in included):
+            issues.append(f"{path}: 付帯サービスの説明が知らない文です")
     if seen != {"daytime", "nighttime", "freetime"}:
         issues.append(f"{key}: DAY・NIGHT・FREE TIMEのいずれかが欠落")
-    note = item.get("note", "")
-    if note and not _string(note, 180):
-        issues.append(f"{key}: 公式料金の注記が不正")
+    if item.get("note") != JOYJOY_NOTE:
+        issues.append(f"{key}: 公式料金の注記が知らない文です")
     if old:
-        _price_delta(_joyjoy_values(old), values, key, issues)
+        before = _joyjoy_values(old)
+        _price_delta(before, values, key, issues)
+        # _price_delta は 400 円を超える差でしか反応しないので、30 分 100〜300 円台の JOYJOY では倍・半分で見る
+        for position in sorted(before.keys() & values.keys(), key=str):
+            was, now = before[position], values[position]
+            if type(was) is int and type(now) is int and was > 0 and not was / 2 <= now <= was * 2:
+                issues.append(f"{key}: JOYJOY最低価格が前回から急に変わりました {was}円 → {now}円 ({position[0]})")
+                break
 
 
 def _validate_doc(name, current, previous, issues, *, allow_empty_old=False, built=False):

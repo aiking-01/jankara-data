@@ -1,0 +1,276 @@
+{
+ "schema_version": 1,
+ "updated_at": 1795600000,
+ "shops": {
+  "jj-Sample-Store": {
+   "page": "https://www.joyjoy.co.jp/store/view/Sample-Store",
+   "rates": [
+    {
+     "period": "daytime",
+     "charge": "お一人様 30分",
+     "unit": "per_person_30_minutes",
+     "windows": [
+      {
+       "hours": "AM7:00~AM12:00",
+       "minimum_yen": 135,
+       "price_text": "¥135~"
+      },
+      {
+       "hours": "AM12:00~PM7:00",
+       "minimum_yen": 160,
+       "price_text": "¥160~"
+      }
+     ],
+     "included": [
+      "☆ジュース飲み放題付き"
+     ]
+    },
+    {
+     "period": "nighttime",
+     "charge": "お一人様 30分",
+     "unit": "per_person_30_minutes",
+     "windows": [
+      {
+       "hours": "PM7:00~AM7:00",
+       "minimum_yen": 295,
+       "price_text": "¥295~"
+      }
+     ],
+     "included": [
+      "☆ジュース・カクテル・サワー・ハイボール各種飲み放題付き"
+     ]
+    },
+    {
+     "period": "freetime",
+     "charge": "お一人様 室料",
+     "unit": "per_person_per_freetime",
+     "windows": [
+      {
+       "days": "日~木/祝日",
+       "hours": "AM0:00~AM5:00",
+       "minimum_yen": 1180,
+       "price_text": "¥1,180~"
+      },
+      {
+       "days": "金土/祝前/特日",
+       "hours": "AM1:00~AM6:00",
+       "minimum_yen": 1180,
+       "price_text": "¥1,180~"
+      }
+     ],
+     "included": [
+      "☆ジュース・カクテル・サワー・ハイボール各種飲み放題付き"
+     ]
+    }
+   ],
+   "note": "※曜日・人数・時期により、料金が変動致します。詳しくは直接店舗にお問い合わせください。",
+   "checked_at": 1795600000
+  },
+  "jj-Plan-Store": {
+   "page": "https://www.joyjoy.co.jp/store/view/Plan-Store",
+   "rates": [
+    {
+     "period": "daytime",
+     "charge": "お一人様 30分",
+     "unit": "per_person_30_minutes",
+     "windows": [
+      {
+       "hours": "AM7:00~AM12:00",
+       "minimum_yen": 135,
+       "price_text": "¥135~"
+      },
+      {
+       "hours": "AM12:00~PM7:00",
+       "minimum_yen": 160,
+       "price_text": "¥160~"
+      }
+     ],
+     "included": [
+      "☆ジュース飲み放題付き"
+     ]
+    },
+    {
+     "period": "nighttime",
+     "charge": "お一人様 30分",
+     "unit": "per_person_30_minutes",
+     "windows": [
+      {
+       "hours": "PM7:00~AM7:00",
+       "minimum_yen": 245,
+       "price_text": "¥245~"
+      }
+     ],
+     "included": [
+      "☆ジュース・カクテル・サワー・ハイボール各種飲み放題付き"
+     ]
+    },
+    {
+     "period": "freetime",
+     "charge": "お一人様 室料",
+     "unit": "per_person_per_freetime",
+     "windows": [
+      {
+       "days": "夜3時間フリー",
+       "hours": "(ジュース飲み放題限定)夜4時間フリー",
+       "minimum_yen": 1080,
+       "price_text": "¥1,080~"
+      }
+     ],
+     "included": [
+      "☆夜3時間フリーはジュース・カクテル・サワー・ハイボール各種飲み放題付き ※土曜・特日を除く"
+     ]
+    }
+   ],
+   "note": "※曜日・人数・時期により、料金が変動致します。詳しくは直接店舗にお問い合わせください。",
+   "checked_at": 1795600000
+  },
+  "jj-Withdrawn-Store": {
+   "page": "https://www.joyjoy.co.jp/store/view/Withdrawn-Store",
+   "rates": [],
+   "withdrawn": "料金表がありません",
+   "checked_at": 1795600000
+  },
+  "jj-Year-End-Store": {
+   "page": "https://www.joyjoy.co.jp/store/view/Year-End-Store",
+   "rates": [
+    {
+     "period": "daytime",
+     "charge": "お一人様 30分",
+     "unit": "per_person_30_minutes",
+     "windows": [
+      {
+       "hours": "AM7:00~AM12:00",
+       "minimum_yen": 135,
+       "price_text": "¥135~"
+      },
+      {
+       "hours": "AM12:00~PM7:00",
+       "minimum_yen": 160,
+       "price_text": "¥160~"
+      }
+     ],
+     "included": [
+      "☆ジュース飲み放題付き"
+     ]
+    },
+    {
+     "period": "nighttime",
+     "charge": "お一人様 30分",
+     "unit": "per_person_30_minutes",
+     "windows": [
+      {
+       "hours": "PM7:00~AM7:00",
+       "minimum_yen": 295,
+       "price_text": "¥295~"
+      }
+     ],
+     "included": [
+      "☆ジュース・カクテル・サワー・ハイボール各種飲み放題付き"
+     ]
+    },
+    {
+     "period": "freetime",
+     "charge": "お一人様 室料",
+     "unit": "per_person_per_freetime",
+     "windows": [
+      {
+       "days": "日~木/祝日",
+       "hours": "AM0:00~AM5:00",
+       "minimum_yen": 1180,
+       "price_text": "¥1,180~"
+      },
+      {
+       "days": "金土/祝前/特日",
+       "hours": "AM1:00~AM6:00",
+       "minimum_yen": 1180,
+       "price_text": "¥1,180~"
+      }
+     ],
+     "included": [
+      "☆ジュース・カクテル・サワー・ハイボール各種飲み放題付き"
+     ]
+    }
+   ],
+   "note": "※曜日・人数・時期により、料金が変動致します。詳しくは直接店舗にお問い合わせください。",
+   "notices": [
+    {
+     "text": "12/28~1/4は年末年始特別料金となります",
+     "from": "2026-12-28",
+     "until": "2027-01-04"
+    }
+   ],
+   "checked_at": 1795600000
+  },
+  "jj-Open-End-Store": {
+   "page": "https://www.joyjoy.co.jp/store/view/Open-End-Store",
+   "rates": [
+    {
+     "period": "daytime",
+     "charge": "お一人様 30分",
+     "unit": "per_person_30_minutes",
+     "windows": [
+      {
+       "hours": "AM7:00~AM12:00",
+       "minimum_yen": 135,
+       "price_text": "¥135~"
+      },
+      {
+       "hours": "AM12:00~PM7:00",
+       "minimum_yen": 160,
+       "price_text": "¥160~"
+      }
+     ],
+     "included": [
+      "☆ジュース飲み放題付き"
+     ]
+    },
+    {
+     "period": "nighttime",
+     "charge": "お一人様 30分",
+     "unit": "per_person_30_minutes",
+     "windows": [
+      {
+       "hours": "PM7:00~AM7:00",
+       "minimum_yen": 295,
+       "price_text": "¥295~"
+      }
+     ],
+     "included": [
+      "☆ジュース・カクテル・サワー・ハイボール各種飲み放題付き"
+     ]
+    },
+    {
+     "period": "freetime",
+     "charge": "お一人様 室料",
+     "unit": "per_person_per_freetime",
+     "windows": [
+      {
+       "days": "日~木/祝日",
+       "hours": "AM0:00~AM5:00",
+       "minimum_yen": 1180,
+       "price_text": "¥1,180~"
+      },
+      {
+       "days": "金土/祝前/特日",
+       "hours": "AM1:00~AM6:00",
+       "minimum_yen": 1180,
+       "price_text": "¥1,180~"
+      }
+     ],
+     "included": [
+      "☆ジュース・カクテル・サワー・ハイボール各種飲み放題付き"
+     ]
+    }
+   ],
+   "note": "※曜日・人数・時期により、料金が変動致します。詳しくは直接店舗にお問い合わせください。",
+   "notices": [
+    {
+     "text": "年末年始は特別料金となります",
+     "from": null,
+     "until": null
+    }
+   ],
+   "checked_at": 1795600000
+  }
+ }
+}
