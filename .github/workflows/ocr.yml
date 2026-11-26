@@ -53,8 +53,9 @@ jobs:
       - name: Choose images to read
         id: plan
         run: |
-          # 公式サイトの画像を読むときだけプロキシを通す
-          HTTP_PROXY="${CRAWL_PROXY:-}" HTTPS_PROXY="${CRAWL_PROXY:-}" python ocr/plan.py work
+          # 公式サイトの画像を読むときだけプロキシを通す。30 分で取得を打ち切り、取れた分で続ける
+          CRAWL_DEADLINE=$(( $(date +%s) + 30 * 60 )) \
+            HTTP_PROXY="${CRAWL_PROXY:-}" HTTPS_PROXY="${CRAWL_PROXY:-}" python ocr/plan.py work
           python - <<'EOF' >> "$GITHUB_OUTPUT"
           import json, math
           targets = json.load(open("work/targets.json", encoding="utf-8"))
@@ -67,6 +68,13 @@ jobs:
         with:
           name: work
           path: work
+          retention-days: 2
+
+      # カラオケ館の画像を確かめた結果。変わった画像がない回も publish が積む
+      - uses: actions/upload-artifact@v4
+        with:
+          name: checks
+          path: work/kan_checks.json
           retention-days: 2
 
   read:
@@ -132,8 +140,11 @@ jobs:
 
   publish:
     needs: [plan, read]
-    # 一部のOCR shardが失敗した際は不完全な読み取り結果を公開しない。
-    if: needs.plan.result == 'success' && needs.read.result == 'success' && needs.plan.outputs.shards != '[]'
+    # 変わった画像がない回（read は動かない）も、カラオケ館の画像を確かめた結果（verified_at、画像の変化）を積む。
+    # 積まないと、確かめた日時が進まずに 14 日で全店が配られなくなる。
+    # 読み取りの結果は、全部の shard が成功したときだけ使う（一部の OCR shard が失敗した回は読み取りの結果を使わない。
+    # 変わった画像の店は、画像が変わったのに読めていない店として配られず、次の回に読み直す）
+    if: always() && needs.plan.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -149,11 +160,27 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
+          name: checks
+          path: checks
+
+      - uses: actions/download-artifact@v4
+        if: needs.read.result == 'success'
+        with:
           pattern: reads-*
           path: reads
 
       - name: Store results
-        run: python ocr/merge.py reads/*/reads.json
+        shell: bash
+        env:
+          READ_RESULT: ${{ needs.read.result }}
+        run: |
+          if [ "$READ_RESULT" = success ]; then
+            python ocr/merge.py --checks checks/kan_checks.json reads/*/reads.json
+          else
+            # read が動かなかった（skipped）か失敗した回は、画像を確かめた結果だけを積む
+            echo "read: $READ_RESULT"
+            python ocr/merge.py --checks checks/kan_checks.json
+          fi
 
       # 読んでいる間に refresh.yml が dist を更新していることがある。読んだ結果だけ先に積み、
       # 最新の料金表から dist を作り直してプッシュする。プッシュの直前に main が進んでも作り直して再試行する
@@ -192,10 +219,9 @@ jobs:
         run: |
           set -euo pipefail
           failed=0
-          if [[ "$PLAN_RESULT" != "success" || "$FRESHNESS_RESULT" != "success" ]]; then
+          if [[ "$PLAN_RESULT" != "success" || "$FRESHNESS_RESULT" != "success" || "$PUBLISH_RESULT" != "success" ]]; then
             failed=1
-          elif [[ "$SHARDS" != '[]' ]] && \
-               [[ "$READ_RESULT" != "success" || "$PUBLISH_RESULT" != "success" ]]; then
+          elif [[ "$SHARDS" != '[]' && "$READ_RESULT" != "success" ]]; then
             failed=1
           fi
 
@@ -217,7 +243,7 @@ jobs:
           fi
 
       - name: Fail when OCR or delivery is unhealthy
-        if: steps.notification.outcome == 'failure' || steps.freshness.outcome == 'failure' || needs.plan.result != 'success' || (needs.plan.outputs.shards != '[]' && (needs.read.result != 'success' || needs.publish.result != 'success'))
+        if: steps.notification.outcome == 'failure' || steps.freshness.outcome == 'failure' || needs.plan.result != 'success' || needs.publish.result != 'success' || (needs.plan.outputs.shards != '[]' && needs.read.result != 'success')
         run: |
           echo "::error::OCR or published manifest is not healthy."
           exit 1

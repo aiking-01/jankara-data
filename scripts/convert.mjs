@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { convertBigEcho } from './web/bigecho.js';
 import { convertManeki } from './web/maneki.js';
 import { convertMegabig } from './web/megabig.js';
-import { convertKanOcr } from './web/ocr.js';
+import { convertKanShop } from './web/ocr.js';
 import { convertCotedazurShops } from './web/cotedazur.js';
 import { convertJoysound } from './web/joysound.js';
 import { implausiblePrice } from './plausible.mjs';
@@ -18,7 +18,8 @@ const TARGETS = {
   bigecho: ['chain_prices.json', (shop) => convertBigEcho(shop.sections, shop.hours)],
   maneki: ['maneki_prices.json', (shop) => convertManeki(shop.tables)],
   megabig: ['megabig_prices.json', (shop) => convertMegabig(shop.sections, shop.hours)],
-  kan: ['ocr.json', (shop) => (shop.chain === 'カラオケ館' ? convertKanOcr(shop.reads) : { reason: 'other-chain' })],
+  // 画像が変わったのに読めていない店と、14 日画像を確かめていない店は外す（ocr.js の convertKanShop）
+  kan: ['ocr.json', (shop) => (shop.chain === 'カラオケ館' ? convertKanShop(shop) : { reason: 'other-chain' })],
 };
 
 function isEmpty(value) {
