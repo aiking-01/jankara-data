@@ -175,16 +175,11 @@ def main() -> None:
     stored = load_stored()
     fetcher = net.Fetcher(USER_AGENT, label="ocr/plan")
     chosen, checks, failed, skipped = [], {}, 0, 0
-    try:
-        maneki = maneki_targets()
-    except Exception as error:  # まねきねこの対象が決められなくても、カラオケ館は確かめる
-        print(f"::warning::まねきねこの対象を決められません: {type(error).__name__}: {error}", flush=True)
-        maneki = []
     now = time.time()
     refused = set()  # 断られたサイト。残りの画像は取らない
     gone, streak, site_down = [], 0, False  # 画像がない・画像でない応答の店、その続いた数、サイト全体の異常か
     try:
-        for target in maneki + kan_targets():
+        for target in kan_targets():
             if target["key"] and stored.get(target["id"], {}).get("key") == target["key"]:
                 continue
             if target["chain"] == "カラオケ館" and recently_verified(stored.get(target["id"]), now):
@@ -237,28 +232,6 @@ def main() -> None:
         for key in gone:
             checks.pop(key, None)
         print(f"::warning::画像がない・画像でない応答が {len(gone)} 店あり、サイト全体の異常とみなして、この回の印は書きません", flush=True)
-    session = requests.Session()
-    session.headers["User-Agent"] = USER_AGENT
-    chosen, failed = [], 0
-    for target in kan_targets():
-        if target["key"] and stored.get(target["id"], {}).get("key") == target["key"]:
-            continue
-        try:
-            data = fetch(session, target["url"])
-            if target["chain"] == "カラオケ館":
-                target["key"] = hashlib.sha256(data).hexdigest()
-                if stored.get(target["id"], {}).get("key") == target["key"]:
-                    continue
-                image = Image.open(io.BytesIO(data)).convert("RGB")
-            else:
-                image = render_pdf(data)
-        except Exception as error:  # 1 店の失敗で残りを止めない。前回の結果は残る
-            failed += 1
-            print(f"::warning::{target['id']}: {error}", flush=True)
-            continue
-        target["file"] = f"{target['id']}.jpg"
-        image.save(work / target["file"], quality=92)
-        chosen.append(target)
     (work / "targets.json").write_text(json.dumps(chosen, ensure_ascii=False), encoding="utf-8")
     (work / "kan_checks.json").write_text(json.dumps(checks, ensure_ascii=False, sort_keys=True), encoding="utf-8")
     reads = sum(target["reads"] for target in chosen)

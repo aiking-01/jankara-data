@@ -3,51 +3,31 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { convertBigEcho } from './web/bigecho.js';
-import { convertManeki } from './web/maneki.js';
-import { convertMegabig, reportMegabig } from './web/megabig.js';
 import { manekiConverter } from './web/maneki.js';
-import { convertMegabig } from './web/megabig.js';
-import { convertKanOcr } from './web/ocr.js';
-import { convertMegabig } from './web/megabig.js';
+import { convertMegabig, reportMegabig } from './web/megabig.js';
 import { convertKanShop } from './web/ocr.js';
 import { convertCotedazurShops } from './web/cotedazur.js';
-import { convertJoysound } from './web/joysound.js';
+import { convertJoysoundShop, jstDate } from './web/joysound.js';
 import { convertUtahiroShops, todayJst } from './web/utahiro.js';
 import { convertDay, convertJoyjoyShops } from './web/joyjoy.js';
-import { convertJoysoundShop, jstDate } from './web/joysound.js';
 import { implausiblePrice } from './plausible.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const FIELDS = ['regular', 'solo', 'week', 'flat', 'minStay', 'alerts', 'source_rates'];
-// JOYSOUND の期間告知（年末年始など）を判定する今日（JST）。確かめるときは CONVERT_DATE=YYYY-MM-DD で差し替える
+// 料金が変わる期間の告知は、変換する日（JST の今日）で判定する。確かめるときは CONVERT_TODAY=YYYY-MM-DD で差し替える
+// （JOYSOUND とまねきねこは CONVERT_DATE も読む）
 const JOYSOUND_TODAY = /^\d{4}-\d{2}-\d{2}$/.test(process.env.CONVERT_DATE ?? '') ? process.env.CONVERT_DATE : jstDate(Date.now());
 // カラオケ館は料金表が画像なので、ocr.yml が読んだ結果から作る。ocr.json には他のチェーンの店も入っている
 const TARGETS = {
   joysound: ['joysound_prices.json', (shop) => convertJoysoundShop(shop, { today: JOYSOUND_TODAY })],
-  bigecho: ['chain_prices.json', (shop) => convertBigEcho(shop.sections, shop.hours)],
-  joysound: ['joysound_prices.json', (shop) => convertJoysound(shop.sections, shop.opening_hours)],
-  // 料金が変わる期間の告知は、日本時間の今日から 21 日先までと重なるかで見る（CONVERT_TODAY=YYYY-MM-DD で差し替えられる）
   bigecho: ['chain_prices.json', (shop) => convertBigEcho(shop.sections, shop.hours,
     { notice: shop.notice, priceNotes: shop.price_notes, today: process.env.CONVERT_TODAY })],
-  maneki: ['maneki_prices.json', (shop) => convertManeki(shop.tables)],
-  // メガビッグは表の外の告知・リンク・読めなかった表も渡す。変換する日は CONVERT_TODAY（YYYY-MM-DD）で差し替えられる
-  megabig: ['megabig_prices.json', (shop) => reportMegabig(shop.page, convertMegabig(shop.sections, shop.hours, shop))],
   // まねきねこは全店の記録から共通の画像（飲み放題の案内など）を数えてから、告知と料金表を店ごとに確かめる
   maneki: ['maneki_prices.json', manekiConverter(JSON.parse(readFileSync(join(ROOT, 'source', 'maneki_prices.json'), 'utf8')).shops)],
-  megabig: ['megabig_prices.json', (shop) => convertMegabig(shop.sections, shop.hours)],
-  kan: ['ocr.json', (shop) => (shop.chain === 'カラオケ館' ? convertKanOcr(shop.reads) : { reason: 'other-chain' })],
-  megabig: ['megabig_prices.json', (shop) => convertMegabig(shop.sections, shop.hours)],
-  // 画像が変わったのに読めていない店と、14 日画像を確かめていない店は外す（ocr.js の convertKanShop）。
-  // 1 店の読み取りで思わぬ例外が出ても、その店を配らないだけにして、ほかの店とほかのチェーンの変換は止めない
-  kan: ['ocr.json', (shop) => {
-    if (shop.chain !== 'カラオケ館') return { reason: 'other-chain' };
-    try {
-      return convertKanShop(shop);
-    } catch (error) {
-      console.warn(`::warning::kan: ${shop.url ?? ''} を変換できないので配りません (${error?.message ?? error})`);
-      return { reason: 'error' };
-    }
-  }],
+  // メガビッグは表の外の告知・リンク・読めなかった表も渡す
+  megabig: ['megabig_prices.json', (shop) => reportMegabig(shop.page, convertMegabig(shop.sections, shop.hours, shop))],
+  // 画像が変わったのに読めていない店と、14 日画像を確かめていない店は外す（ocr.js の convertKanShop）
+  kan: ['ocr.json', (shop) => (shop.chain === 'カラオケ館' ? convertKanShop(shop) : { reason: 'other-chain' })],
 };
 
 function isEmpty(value) {
@@ -131,7 +111,14 @@ for (const [name, [file, convert]] of Object.entries(TARGETS)) {
   const shops = {};
   let total = 0;
   for (const [id, shop] of Object.entries(source.shops)) {
-    const converted = convert(shop);
+    // 1 店の変換で思わぬ例外が出ても、その店を配らないだけにして、ほかの店とほかのチェーンの変換は止めない
+    let converted;
+    try {
+      converted = convert(shop);
+    } catch (error) {
+      console.warn(`::warning::${name}/${id}: 変換できないので配りません (${error?.message ?? error})`);
+      converted = { reason: 'error' };
+    }
     if (converted.reason !== 'other-chain') total += 1;
     if (converted.reason) continue;
     const odd = implausiblePrice(converted);
