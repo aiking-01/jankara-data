@@ -27,30 +27,41 @@ function isEmpty(value) {
 
 
 mkdirSync(join(ROOT, 'build'), { recursive: true });
-// コート・ダジュールは公式料金JSONを保持し、engine.js 用の通常料金とヒトカラ料金も作る。
-const coteSource = JSON.parse(readFileSync(join(ROOT, 'source', 'cotedazur_prices.json'), 'utf8'));
+// コート・ダジュールは公式料金JSONを元データに保持し、配るのは engine.js 用の通常料金とヒトカラ料金だけ。
 // 年末年始のような期間別の料金が出ると、ほとんどの店を読まなくなる。読めた店だけを配り、ほかのチェーンの変換は止めない。
 // 読めない店は「料金表を見る」になるだけで、誤った金額は出ない（取得の失敗は validate_data.py が元データの店数で止める）
-const { shops: coteShops, rejected: coteFailures, accepted, original } =
-  Object.keys(coteSource.shops).length ? convertCotedazurShops(coteSource.shops, 0)
-    : { shops: {}, rejected: [], accepted: 0, original: 0 };
-const coteReasons = {};
-for (const { reason } of coteFailures) {
-  const kind = reason.replace(/^\d+: /, '');
-  coteReasons[kind] = (coteReasons[kind] ?? 0) + 1;
-}
-for (const [reason, count] of Object.entries(coteReasons)) {
-  console.warn(`::warning::cotedazur: ${count} shops not converted: ${reason}`);
-}
-for (const [id, shop] of Object.entries(coteShops)) {
-  const odd = implausiblePrice(shop);
-  if (odd) {
-    console.warn(`::warning::cotedazur/${id}: 金額が不自然なので配りません (${odd})`);
-    delete coteShops[id];
+// 変換する日は JST の今日（手で動かすときは CONVERT_TODAY=YYYY-MM-DD で差し替える）
+function convertCote() {
+  const coteSource = JSON.parse(readFileSync(join(ROOT, 'source', 'cotedazur_prices.json'), 'utf8'));
+  const { shops: coteShops, rejected: coteFailures, accepted, original } =
+    Object.keys(coteSource.shops).length ? convertCotedazurShops(coteSource.shops, 0)
+      : { shops: {}, rejected: [], accepted: 0, original: 0 };
+  const coteReasons = {};
+  for (const { reason } of coteFailures) {
+    const kind = reason.replace(/^\d+: /, '');
+    coteReasons[kind] = (coteReasons[kind] ?? 0) + 1;
   }
+  for (const [reason, count] of Object.entries(coteReasons)) {
+    console.warn(`::warning::cotedazur: ${count} shops not converted: ${reason}`);
+  }
+  for (const [id, shop] of Object.entries(coteShops)) {
+    const odd = implausiblePrice(shop);
+    if (odd) {
+      console.warn(`::warning::cotedazur/${id}: 金額が不自然なので配りません (${odd})`);
+      delete coteShops[id];
+    }
+  }
+  console.log(`cotedazur: ${accepted}/${original} shops (${coteFailures.length} unsupported)`);
+  return { updated_at: coteSource.updated_at, shops: coteShops };
 }
-writeFileSync(join(ROOT, 'build', 'cotedazur.json'), JSON.stringify({ updated_at: coteSource.updated_at, shops: coteShops }));
-console.log(`cotedazur: ${accepted}/${original} shops (${coteFailures.length} unsupported)`);
+// 思わぬ例外が出ても、ほかのチェーンの変換は止めない。その回はコート・ダジュールの金額を配らない
+let cote = { updated_at: 0, shops: {} };
+try {
+  cote = convertCote();
+} catch (error) {
+  console.warn(`::warning::cotedazur: 変換できないので今回は配りません (${error?.message ?? error})`);
+}
+writeFileSync(join(ROOT, 'build', 'cotedazur.json'), JSON.stringify(cote));
 
 for (const [name, [file, convert]] of Object.entries(TARGETS)) {
   const source = JSON.parse(readFileSync(join(ROOT, 'source', file), 'utf8'));
