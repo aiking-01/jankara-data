@@ -1,6 +1,8 @@
 // ビッグエコーの公式料金表 (parseBigEcho の sections) を engine.js の regular / solo の形へ変換する。DOM に依存しない。
 // 誤った金額を出さないことを最優先にする。確実に読めない表は使わず、店ごと読めなければ公式の料金表へ案内する。
 // 30 分料金に加え、名前と時間帯と最終受付を確かめられたフリータイムとパックも読む。条件付きのプランは読まない。
+// 料金が変わる期間の告知（お知らせ・表のない見出し・表の注記・日付の付いた表）が今日から 90 日先までと重なる店と、
+// 30 分表の注記にある 1 人の追加料金を読めない店は、店ごと出さない。
 
 const WEEK = ['月', '火', '水', '木', '金', '土', '日'];
 const ALL_DAYS = [...WEEK, '祝', '祝前'];
@@ -116,18 +118,80 @@ export function drinkOf(text, note = '') {
 
 // ---- 表の選別 ----
 
+// 特別な時期の料金を示す語。この語が表の名前にある表は、通常の料金として読まない
+const SPECIAL_LABEL = /特別期間|特別料金|年末|年始|繁忙期|お盆|夏季|冬季|夏期|冬期|ゴールデンウィーク|GW|クリスマス|正月|大晦日/;
+// 表の名前の中の日付（「12/1～」）。「2026/12/01」の一部は拾わない
+const SLASH_DATE = /(?<![\d/])\d{1,2}\/\d{1,2}(?![\d/])/;
 // 30 分料金でも条件付きの表は定価の比較に使わない
-const NOT_REGULAR = /パック|フリー|FT|コース|プラン|倶楽部|クラブ|おはカラ|パスポート|学得|限定|特別期間|ダーツ|アミューズメント|ラグジュアリー|名様|\d時間|\d+月\d+/;
+const NOT_REGULAR = /パック|フリー|FT|コース|プラン|倶楽部|クラブ|おはカラ|パスポート|学得|限定|ダーツ|アミューズメント|ラグジュアリー|名様|\d時間|\d+月\d+/;
+// 見出し（h3）が特別な期間の料金を示す表も使わない
+const SPECIAL_HEADING = /特別料金|期間限定/;
 
 function isSlotSection(section) {
   if (!/30分/.test(norm(`${section.heading} ${section.time} ${section.title}`))) return false;
-  return !NOT_REGULAR.test(norm(`${section.time} ${section.title}`));
+  const label = norm(`${section.time} ${section.title}`);
+  if (NOT_REGULAR.test(label) || SPECIAL_LABEL.test(label) || SLASH_DATE.test(label)) return false;
+  // 見出し（h3）や列見出しに日付のある表（「12/29～1/3の料金」）は、その期間だけの料金
+  if (isDated(section)) return false;
+  return !SPECIAL_LABEL.test(norm(section.heading)) && !SPECIAL_HEADING.test(norm(section.heading));
 }
 
 const STUDENT_IS_MEMBER = /(?:学割|学生)[^。※]*?会員(?:様)?(?:価格|料金)/;
 const SOLO_EXTRA = /(?:ひとり|一人|1人)カラオケ:?\+(\d+)円/;
 
-function rowPrices(section, index, allStudents) {
+// ---- 30 分表の注記にある 1 人の追加料金 ----
+
+// 1 人で使うときの説明。「お一人様30分+110円」（1 人あたりの料金）や「ひとりの料金+540円でドリンクバー」は含めない
+const SOLO_CONTEXT = /ひとりカラオケ|ヒトカラ|(?:お?ひとり|お?一人|お?1人|1名)様?(?:での|で|の)?(?:ご)?(?:利用|の場合)/;
+// はっきり読める形: 「30分毎に+50円」「30分+110円」「上記料金より+50円」「上記の30分料金+40円」「各種料金+40円」
+const SOLO_CLEAR = /(?:30分(?:毎に|ごとに|毎|ごと|につき|あたり|当たり)?(?:料金)?|(?:上記|表記|各種)の?(?:価格|料金|金額)?(?:より|に|から)?(?:30分(?:毎に|ごとに|毎|ごと|につき|あたり)?)?(?:料金)?|(?:ひとり|一人|1人)カラオケ:?)\+(\d{1,3})円(?:\(税込\))?/;
+// 30 分ごとの追加料金として読めない形（入室時の 1 回だけ、曜日で違う、税別）
+const SOLO_UNCLEAR = /入室時|一律|1回|初回|最初|税[別抜]|[月火水木金土日祝](?:曜|[~〜・\-])|平日|土日|週末|祝日|祝前/;
+const SOLO_PART = /[※*＊。◆■□●○〇◎◇☆★\n]/;
+// 1 人で使うときの金額の書き方（「+50円」「1.2倍」「30分プラス25円」「別途料金」「【平日】330円」）。
+// 「ひとりカラオケ料金は会員様料金となります」「店舗までお問い合わせください」は金額を書いていないので含めない
+const SOLO_PRICE = /[+＋]\d|円|倍|プラス|別途|加算|割増|増し|増額/;
+// 1 人の説明の後に続くドリンクバーや飲み放題の料金（「…ご案内ルーム数6部屋 ドリンクバーは別途660円」）は、1 人の料金ではない
+const OTHER_SUBJECT = /(?:ドリンクバー|飲み放題|アルコール|ソフトドリンク)(?:は|を|も)/;
+function soloPart(part) {
+  const at = part.search(SOLO_CONTEXT);
+  if (at < 0) return '';
+  const cut = part.slice(at).search(OTHER_SUBJECT);
+  return cut < 0 ? part : part.slice(0, at + cut);
+}
+const soloPriceParts = (texts) => texts.flatMap((text) => String(text ?? '').split(SOLO_PART))
+  .map((part) => soloPart(norm(part))).filter((part) => part && SOLO_PRICE.test(part));
+
+// 表 1 つの注記から 1 人の追加料金（30 分ごとの円）を読む。記載がなければ null、読めない形なら NaN
+function soloNoteExtra(section) {
+  const parts = soloPriceParts([section.heading, section.time, section.title, section.note]);
+  if (!parts.length) return null;
+  const values = new Set();
+  for (const text of parts) {
+    // 「30分プラス25円」は「30分+25円」と同じに読む
+    const part = text.replace(/プラス(?=\d)/g, '+');
+    const match = SOLO_CLEAR.exec(part);
+    if (!match || (part.match(/\+\d+/g) ?? []).length !== 1 || SOLO_UNCLEAR.test(part.replace(/ひとりカラオケ/g, ''))) return NaN;
+    values.add(Number(match[1]));
+  }
+  return values.size === 1 ? [...values][0] : NaN;
+}
+
+// 公式の表の誤記（「1,540円」を「154円」と書くなど、桁が 1 つ違う金額）。同じ列のほかの区分の金額の
+// 10 倍か 10 分の 1 にほぼ一致し、列の中央の金額から大きく離れていたら、その列（その曜日の料金）を読まない
+function hasDigitSlip(values) {
+  if (values.length < 2) return false;
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = sorted[Math.floor(sorted.length / 2)];
+  const near = (value, target) => Math.abs(value - target) <= target * 0.1;
+  return values.some((value, index) => {
+    const others = values.filter((_, other) => other !== index);
+    return (value < middle * 0.4 && others.some((other) => near(value * 10, other)))
+      || (value > middle * 2.5 && others.some((other) => near(value / 10, other)));
+  });
+}
+
+function rowPrices(section, index, allStudents, soloExtra = null) {
   const prices = {};
   let solo = null;
   for (const row of section.rows) {
@@ -145,13 +209,21 @@ function rowPrices(section, index, allStudents) {
     } else if (name.startsWith('ひとりカラオケ')) solo = value;
     else return null;
   }
+  // 誤記のある列は金額を空にする。表ごと外すと同じ表のほかの曜日も消え、プランの並びがずれて
+  // validate_data.py の前回との比べ方（表・プラン・曜日の番号）が別のプランの金額と比べてしまう
+  if (hasDigitSlip([...Object.values(prices), ...(solo === null ? [] : [solo])])) return { prices: {}, solo: null };
   const extra = SOLO_EXTRA.exec(norm(section.header[index + 1]));
   if (extra && prices.会員 !== undefined) solo = prices.会員 + Number(extra[1]);
+  // 注記にだけある「ひとりカラオケは 30 分ごとに +50 円」。見出しの追加料金と同じに会員の金額へ足す
+  else if (solo === null && soloExtra !== null) {
+    if (prices.会員 === undefined) return null;
+    solo = prices.会員 + soloExtra;
+  }
   return Object.keys(prices).length ? { prices, solo } : null;
 }
 
 // 表 1 つから { key, days(Set), prices, solo } の列を取り出す。読めなければ null
-function readSection(section, allStudents) {
+function readSection(section, allStudents, soloExtra = null) {
   const labels = section.header.slice(1);
   const range = parseTimeRange(section.time) ?? parseTimeRange(section.title);
   if (!labels.length || !range) return null;
@@ -176,7 +248,7 @@ function readSection(section, allStudents) {
   const hours = rangeText(range);
   const read = [];
   for (const column of picked) {
-    const cells = rowPrices(section, column.index, allStudents);
+    const cells = rowPrices(section, column.index, allStudents, soloExtra);
     if (!cells) return null;
     read.push({ hours, drinks, days: column.days, ...cells });
   }
@@ -216,8 +288,13 @@ function buildPlans(columns) {
     }
     const { hours, drinks } = group[0];
     plans.push({ name: '30分', hours, last_entry: '', days, ...drinks });
-    if (soloDays.some((row) => Object.keys(row.prices).length)) solos.push({ name: '30分', hours, last_entry: '', days: soloDays });
+    if (soloDays.some((row) => Object.keys(row.prices).length)) solos.push({ drink: drinks.drink, plan: { name: '30分', hours, last_entry: '', days: soloDays } });
   }
+  // アプリは 1 人の料金を名前と時間帯で引くので、同じ時間帯に飲み物の条件違いの 1 人の料金が 2 つあると後の方が使われる。
+  // 通常の料金と同じく 1 ドリンクの表を基準にし、なければ飲み物の条件のない表、最後にドリンクバー付の表を使う
+  const DRINK_ORDER = ['1ドリンク別', '', 'ドリンクバー付'];
+  const soloPlans = solos.filter((solo) => !solos.some((other) => other.plan.hours === solo.plan.hours
+    && DRINK_ORDER.indexOf(other.drink) < DRINK_ORDER.indexOf(solo.drink))).map((solo) => solo.plan);
   // 同じ時間帯に 1 ドリンクの表とドリンクバー付の表が並ぶ店は、同じ区分なら 1 ドリンクを基準にする
   for (const plan of plans) {
     if (plan.drink !== 'ドリンクバー付') continue;
@@ -229,7 +306,7 @@ function buildPlans(columns) {
     });
   }
   const hasPrices = (plan) => plan.days.some((row) => Object.keys(row.prices).length);
-  return { plans: plans.filter(hasPrices), solos };
+  return { plans: plans.filter(hasPrices), solos: soloPlans };
 }
 
 // ---- 店全体の検証 ----
@@ -342,24 +419,50 @@ function fixedName(section) {
   return null;
 }
 
+// 受付の文の区切り
+const ENTRY_PART = /[※*【】()「」。◎◆■●☆★]/;
+const DAY_BEFORE_ENTRY = /[月火水木金土日祝][^。※]*受付/;
+
 // 最終受付。受付の記載があるのに時刻を読めない、時刻が 2 つある、曜日で変わる表は使わない
 function lastEntryOf(section) {
   const text = clockDigits(norm(`${section.time} ${section.title} ${section.note}`));
   if (!/受付/.test(text)) return '';
-  // 「受付時間 15:00～17:59」は終わりの時刻が最終受付。「18:00～CLOSE」は閉店まで受け付ける
-  const span = [...text.matchAll(/受付(?:時間)?[:：]?(\d{1,2}:\d{2})[~〜～](\d{1,2}:\d{2}|CLOSE)/gi)];
-  if (span.length) return span.length === 1 && !/[月火水木金土日祝][^。※]*受付/.test(text) ? (/close/i.test(span[0][2]) ? '' : span[0][2]) : null;
+  // 「受付時間 15:00～17:59」「受付時間15:00から18:00受付終了」は終わりの時刻が最終受付。「18:00～CLOSE」は閉店まで受け付ける
+  const SPAN = /受付(?:時間)?[:：]?(\d{1,2}:\d{2})(?:[~〜～]|から|より)(\d{1,2}:\d{2}|CLOSE)/gi;
+  const span = [...text.matchAll(SPAN)];
+  if (span.length) {
+    if (span.length !== 1 || DAY_BEFORE_ENTRY.test(text)) return null;
+    return /close/i.test(span[0][2]) ? '' : span[0][2];
+  }
+  // 受付の文（※・【】・括弧・。などで区切った中）に違う時刻が 2 つあるのに範囲として読めなければ、どちらか決められない。
+  // 「OPEN~20:00【受付17:59まで】」のように、時間帯と受付が別の区切りにあるものは読む
+  const phrases = text.split(ENTRY_PART).filter((part) => /受付/.test(part))
+    .map((part) => part.slice(part.search(/(?:最終)?受付/)));
+  if (phrases.some((part) => new Set(part.match(/\d{1,2}:\d{2}/g) ?? []).size > 1)) return null;
   const times = [...new Set([...text.matchAll(LAST_ENTRY)].map((match) => match[1]))];
   if (times.length !== 1) return null;
-  if (/[月火水木金土日祝][^。※]*受付/.test(text)) return null;
+  if (DAY_BEFORE_ENTRY.test(text)) return null;
   return times[0];
 }
 
+// ---- 税別 ----
+
+const TAX_FREE = /税[別抜]/;
+const sectionText = (section) => norm(`${section.heading} ${section.time} ${section.title} ${section.note} ${(section.header ?? []).join(' ')}`);
+// 税込の金額が併記されていない金額のセルがある表
+const hasUntaxedCell = (section) => section.rows.some((row) => row.slice(1).some((cell) => /\d/.test(norm(cell)) && !/税込/.test(norm(cell))));
+// 税別と書いてある表は、税込の金額が併記されたセルだけなら使える。ほかの表の注記や表のない見出しに
+// 「表示価格は税抜」とある店は、どの表も同じに扱う
+const taxExcluded = (section, shopTax) => (shopTax || TAX_FREE.test(sectionText(section))) && hasUntaxedCell(section);
+
 // 表 1 つを { columns } か { reason } にする
-function readFixed(section, allStudents) {
+function readFixed(section, allStudents, shopTax = false) {
   const label = norm(`${section.heading} ${section.time} ${section.title}`);
   if (/30分/.test(label)) return { reason: 'slot' };
-  if (NOT_FIXED.test(label) || NOT_FIXED_NOTE.test(norm(section.note))) return { reason: 'condition' };
+  if (NOT_FIXED.test(label) || SPECIAL_LABEL.test(label) || SLASH_DATE.test(label) || isDated(section) || NOT_FIXED_NOTE.test(norm(section.note))) {
+    return { reason: 'condition' };
+  }
+  if (taxExcluded(section, shopTax)) return { reason: 'tax-excluded' };
   const words = clockDigits(norm(`${section.time} ${section.title}`)).replace(/(?:最終)?受付[^※]*/g, '');
   if (DAY_HOURS.test(words)) return { reason: 'day-hours' };
   const name = fixedName(section);
@@ -370,8 +473,10 @@ function readFixed(section, allStudents) {
   const time = clockDigits(norm(section.time)).replace(/[※*]?最終受付.*$/, '').replace(/[(（【][^)）】]*(?:受付|パック|フリー)[^)）】]*[)）】]/g, '');
   const columns = readSection({ ...section, time }, allStudents);
   if (!columns) return { reason: 'table' };
-  // 1 人の追加料金が注記だけにある表は、1 人の金額を出せない（通常の金額で出すと安く見える）
-  const soloNote = /(?:お?(?:一人|1人|ひとり)(?:様|カラオケ)?|1名様?)[^。]*?[+＋]\d/.test(norm(`${section.title} ${section.note} ${section.header.join(' ')}`));
+  // 1 人の追加料金が注記だけにある表は、1 人の金額を出せない（通常の金額で出すと安く見える）。
+  // 「+」のない形（「1.2倍」「プラス200円」「別途料金」）も 30 分表と同じに見る
+  const soloNote = /(?:お?(?:一人|1人|ひとり)(?:様|カラオケ)?|1名様?)[^。]*?[+＋]\d/.test(norm(`${section.title} ${section.note} ${section.header.join(' ')}`))
+    || soloPriceParts([section.title, section.note, ...section.header]).length > 0;
   if (soloNote && columns.every((column) => column.solo === null)) return { reason: 'solo-note' };
   for (const column of columns) {
     const values = [...Object.values(column.prices), column.solo].filter((value) => value !== null);
@@ -384,8 +489,8 @@ function readFixed(section, allStudents) {
 }
 
 // 読まなかった理由の集計（調査用）
-export function fixedReasons(sections) {
-  return (sections ?? []).map((section) => readFixed(section, true).reason ?? 'ok');
+export function fixedReasons(sections, shopTax = false) {
+  return (sections ?? []).map((section) => readFixed(section, true, shopTax).reason ?? 'ok');
 }
 
 // 同じ名前、時間帯、飲み物の条件の列を 1 つのプランにまとめる。読めないまとまりは捨てる（30 分料金だけで比べる）
@@ -416,36 +521,273 @@ function buildFixed(columns) {
   }
   // 同じ名前と時間帯のプランが飲み物の条件違いで 2 つあると、どちらが定価か決められない
   const twice = (plan) => plans.filter((other) => other.name === plan.name && other.hours === plan.hours).length > 1;
-  return { plans: plans.filter((plan) => !twice(plan)), solos: solos.filter((plan) => !twice(plan)) };
+  // 誤記ですべての列の金額を空にしたプランは配らない
+  const hasPrices = (plan) => plan.days.some((row) => Object.keys(row.prices).length);
+  return { plans: plans.filter((plan) => !twice(plan) && hasPrices(plan)), solos: solos.filter((plan) => !twice(plan)) };
+}
+
+// ---- 料金が変わる期間の告知 ----
+//
+// 店舗からのお知らせ、料金欄の表のない見出し、表の見出し・題・注記・列見出しに「12/1～1/5は特別料金」「2026年12月1日より
+// 一部の料金を改定」のような告知があり、その期間が今日から WINDOW_DAYS 日先までと重なる店は金額を出さない。
+// アプリは配ったデータを最長 21 日使い、利用者は過去でなければ何か月先の日付も選べる。告知はふつう期間の 1～2 か月前に
+// 出るので、21 日に 2 か月ほど足した 90 日先までを見る。終わりの日付が読めない告知（「12月1日より」）は、始まりが 90 日先
+// より前なら出さない。日付のない一般的な断り書き（「年末年始などは料金が異なる場合がございます」）では止めない。
+
+export const WINDOW_DAYS = 90;
+// 料金の告知でない文にある、意味の分からない 1 日だけの日付（チケットの配布日など）は、配信データを使う 21 日先までだけ見る
+const NEAR_DAYS = 21;
+const DAY_MS = 86400000;
+// 段落（お知らせの dd、見出し 1 つ、表 1 つ）の中の文の区切り
+const SENTENCE = /[\n。※★☆◆■□●○〇◎◇▼▲]/;
+const PRICE_WORD = /料金|価格|円|コース|プラン|室料/;
+// 料金が変わることを表す語。「期間限定」は「期間限定料金」のときだけ。「11月末までの期間限定プラン」は通常の料金を変えない販促
+const CHANGE_WORD = /特別|異な|変更|変わ|改定|改訂|改正|UP|アップ|値上|割増|増額|週末料金|(?:期間|時間)限定(?:の)?(?:料金|価格)|年末|年始|繁忙|問い?合わ?せ|問合せ|新(?:料金|価格)|(?:料金|価格)(?:体系)?(?:を|が|も)?(?:見直|新しく)|クリスマス料金|[+＋]\d+円(?:と|に)な/i;
+// 日付のある文でだけ料金の告知と見なす語。「+200円でポテト食べ放題」「祝前日は土日祝料金」「フリータイムは実施しておりません」は、
+// 日付がなければいつもの説明のことが多い。日付があれば、その日の上乗せ、ほかの曜日の料金、プランや割引を使えないこと、
+// 受付の変更として読む
+const DATED_CHANGE = /[+＋]\d|プラス\d|(?:休日|土日祝?日?|祝日|祝祭日|深夜)料金|実施(?:して|し|致し|いたし)?(?:おりません|ません)|(?:ござい|御座い)ません|休止|中止|停止|対象外|(?:利用|使用)(?:いただけ|頂け|でき|出来)(?:ません|ない)|不可|適用|受付.{0,8}(?:まで|変更|短縮)/;
+const PLAN_WORD = /フリータイム|フリー|パック|割引|学割|シニア|会員|ひとりカラオケ|30分/;
+// 誕生日の範囲（「平成20年(2008年)4月2日～…生まれ」）は料金の期間ではない
+const NOT_PERIOD = /生まれ|生年月日/;
+// 「場合がございます」のような、日付のない一般的な断り書き
+const MAYBE = /場合|ことが(?:あり|ござい)|可能性/;
+// 特別な時期の料金の表や見出しの名前（「年末年始料金」）。「学生特別料金」「会員特別価格」のような割引は含めない
+const SEASON_LABEL = /特別期間|(?<!学生|学割|会員|会員様)特別(?:料金|価格)|年末|年始|繁忙期|お盆|夏季|冬季|夏期|冬期|ゴールデンウィーク|GW|クリスマス|正月|大晦日|元旦|元日/;
+// 日付。年のある形を先に試す（「2026/12/01」を「2026/12」と「12/01」に分けて読まない）。
+// 「期間：12月1日」のようなラベルのコロンの後は読み、「18:00」のような時刻の続きは読まない。
+// 「12.29」も読むが、「1.2倍」「3.5時間」「2/3名様」のような数は読まない
+const DAY_PART = '(\\d{1,2})(?:日|(?![\\d時:分円名歳人/月]))';
+const NOT_AFTER_NUMBER = '(?<![\\d/.])(?<!\\d:)';
+const NOT_QUANTITY = '(?![\\d/:時分円名歳人月倍%]|\\.\\d|ch|h)';
+const DATE = new RegExp([
+  `(20\\d{2})[/.\\-](\\d{1,2})(?:[/.\\-]${DAY_PART})?(?![\\d/.])`,
+  `(20\\d{2})年(\\d{1,2})月(?:${DAY_PART})?`,
+  `${NOT_AFTER_NUMBER}(\\d{1,2})月(?:${DAY_PART})?`,
+  `${NOT_AFTER_NUMBER}(\\d{1,2})[/.](\\d{1,2})${NOT_QUANTITY}`,
+].join('|'), 'g');
+const WEEKDAY_OR_TIME = '(?:\\([^)]{1,6}\\))?(?:\\d{1,2}:\\d{2})?';
+const RANGE_SEP = new RegExp(`^${WEEKDAY_OR_TIME}(?:[~〜\\-‐–—ー]|から|より)(?:翌日?)?$`);
+// 「12/29・30・31」の日だけの続き、「12/28～31日」の日だけの終わり
+const MORE_DAYS = new RegExp(`${WEEKDAY_OR_TIME}[・,、]${DAY_PART}`, 'y');
+const DAY_END = new RegExp(`${WEEKDAY_OR_TIME}(?:[~〜\\-ー]|から)${DAY_PART}`, 'y');
+const OPEN_AFTER = new RegExp(`^${WEEKDAY_OR_TIME}(?:より|から|以降|以後|[~〜\\-ー](?!\\d))`);
+const END_AFTER = new RegExp(`^${WEEKDAY_OR_TIME}(?:まで|迄)`);
+// 期間を示す行（「期間：12月1日～」「12/29(火)～1/3(日)」「12/29・30・31」）。料金の語がなくても「より」「まで」を読む
+const PERIOD_LINE = /期間|期日|日程|日時|実施日|対象日/;
+const PERIOD_FILLER = /\([^)]{1,6}\)|\d{1,2}:\d{2}|\d{1,2}日?|[~〜\-‐–—ー・,、:【】「」()[\]]|から|より|まで|迄|以降|以後|翌日?/g;
+
+const dayNumber = (y, m, d) => Date.UTC(y, m - 1, d) / DAY_MS;
+const lastDayOf = (y, m) => new Date(Date.UTC(y, m, 0)).getUTCDate();
+
+// 'YYYY-MM-DD' か省略（日本時間の今日）を日の番号にする
+export function dayOf(today) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(today ?? ''));
+  if (match) return dayNumber(Number(match[1]), Number(match[2]), Number(match[3]));
+  return Math.floor((Date.now() + 9 * 3600 * 1000) / DAY_MS);
+}
+
+// 「令和8年」は「2026年」にして読む
+const westernYear = (text) => text.replace(/令和(元|\d{1,2})年/g, (_, n) => `${2018 + (n === '元' ? 1 : Number(n))}年`);
+
+function dateTokens(text) {
+  const tokens = [];
+  for (const match of text.matchAll(DATE)) {
+    const [y, m, d] = match[1] ? [match[1], match[2], match[3]] : match[4] ? [match[4], match[5], match[6]]
+      : match[7] ? [undefined, match[7], match[8]] : [undefined, match[9], match[10]];
+    const token = { y: y && Number(y), m: Number(m), d: d === undefined ? null : Number(d),
+      start: match.index, end: match.index + match[0].length };
+    if (token.m < 1 || token.m > 12 || (token.d !== null && (token.d < 1 || token.d > 31))) continue;
+    tokens.push(token);
+    if (token.d === null) continue;
+    MORE_DAYS.lastIndex = token.end;
+    for (let more = MORE_DAYS.exec(text); more; more = MORE_DAYS.exec(text)) {
+      tokens.push({ ...token, d: Number(more[1]), start: more.index, end: MORE_DAYS.lastIndex });
+    }
+  }
+  return tokens.sort((a, b) => a.start - b.start);
+}
+
+const isPeriodLine = (text) => PERIOD_LINE.test(text) || text.replace(DATE, '').replace(PERIOD_FILLER, '').length <= 1;
+
+// 文の中の期間を { kind: 'range' | 'open' | 'end' | 'single', a, b, near } で返す。
+// direct でない文（料金の告知でない文）の「より」「まで」は、期間を示す行でなければその日 1 日として扱い、near を付ける
+function periodItems(text, direct) {
+  const strong = direct || isPeriodLine(text);
+  const tokens = dateTokens(text);
+  const items = [];
+  for (let i = 0; i < tokens.length; i += 1) {
+    const a = tokens[i];
+    const b = tokens[i + 1];
+    if (b && RANGE_SEP.test(text.slice(a.end, b.start))) {
+      items.push({ kind: 'range', a, b });
+      i += 1;
+      continue;
+    }
+    DAY_END.lastIndex = a.end;
+    const dayEnd = a.d !== null ? DAY_END.exec(text) : null;
+    if (dayEnd) {
+      const d = Number(dayEnd[1]);
+      items.push({ kind: 'range', a, b: { y: undefined, m: d >= a.d ? a.m : (a.m % 12) + 1, d } });
+      continue;
+    }
+    const after = text.slice(a.end, a.end + 16);
+    const before = text.slice(Math.max(0, a.start - 1), a.start);
+    const kind = OPEN_AFTER.test(after) ? 'open' : END_AFTER.test(after) || /[~〜]/.test(before) ? 'end' : 'single';
+    items.push(strong ? { kind, a } : { kind: 'single', a, near: true });
+  }
+  return items;
+}
+
+// 年のない日付は、今日に一番近い回として読む。[始まり, 終わり]（日の番号。開いた側は ±Infinity）か null
+function resolvePeriod(item, today) {
+  const year = new Date(today * DAY_MS).getUTCFullYear();
+  const at = (token, y, edge) => {
+    const d = token.d ?? (edge === 'start' ? 1 : lastDayOf(y, token.m));
+    return d > lastDayOf(y, token.m) ? null : dayNumber(y, token.m, d);
+  };
+  const options = [];
+  if (item.kind === 'range') {
+    const { a, b } = item;
+    const years = a.y ? [a.y] : b.y ? [b.y, b.y - 1] : [year - 1, year, year + 1];
+    for (const ya of years) {
+      const start = at(a, ya, 'start');
+      let end = start === null ? null : at(b, b.y ?? ya, 'end');
+      if (end !== null && !b.y && end < start) end = at(b, ya + 1, 'end');
+      if (start === null || end === null || end < start) continue;
+      options.push([start, end]);
+      if (!a.y && b.y) break; // 終わりの年だけある期間は、始まりを同じ年か前の年にする
+    }
+  } else {
+    for (const y of item.a.y ? [item.a.y] : [year - 1, year, year + 1]) {
+      const first = at(item.a, y, 'start');
+      const last = at(item.a, y, 'end');
+      if (first === null || last === null) continue;
+      options.push(item.kind === 'open' ? [first, Infinity] : item.kind === 'end' ? [-Infinity, last] : [first, last]);
+    }
+  }
+  const distance = ([start, end]) => {
+    const from = Number.isFinite(start) ? start : end;
+    const to = Number.isFinite(end) ? end : start;
+    return from <= today && today <= to ? 0 : Math.min(Math.abs(from - today), Math.abs(to - today));
+  };
+  return options.sort((x, y) => distance(x) - distance(y))[0] ?? null;
+}
+
+const overlapsWindow = (item, today) => {
+  const period = resolvePeriod(item, today);
+  return period !== null && period[0] <= today + (item.near ? NEAR_DAYS : WINDOW_DAYS) && period[1] >= today;
+};
+
+const sentencesOf = (text) => String(text ?? '').split(SENTENCE).map((part) => westernYear(norm(part)))
+  .filter((part) => part && !NOT_PERIOD.test(part));
+// 「値上げ」「値下げ」はそれだけで料金の告知
+const isPriceChange = (sentence) => (PRICE_WORD.test(sentence) && CHANGE_WORD.test(sentence)) || /値上|値下/.test(sentence);
+const isDatedChange = (sentence) => isPriceChange(sentence)
+  || ((PRICE_WORD.test(sentence) || PLAN_WORD.test(sentence)) && (CHANGE_WORD.test(sentence) || DATED_CHANGE.test(sentence)));
+// 「年末年始は特別料金となります」のように、特別な時期の料金だと言い切った文
+const isSeasonPrice = (sentence) => SEASON_LABEL.test(sentence) && /料金|価格/.test(sentence) && !MAYBE.test(sentence);
+const sectionParagraph = (section) => [section.heading, section.time, section.title, section.note,
+  (section.header ?? []).join(' ')].join('\n');
+
+// 期間の日付が付いた料金表（見出しの「12/29～1/3の料金」、時間帯の欄の「(2026年11月19日までの料金表です)」、
+// 列見出しの「7/21~9/4 全日」）。その期間には日付のない表の金額を使えないので、期間が重なれば店ごと出さない。
+// 学生や人数の条件の付いたプランと、食べ放題のような料金表でないものの日付は見ない（その表はもともと読まない）
+const TABLE_WORD = /30分|フリー|FT|パック|料金|室料|ルーム/;
+const CONDITIONAL = /限定|名様|学生|学割|コース|ダーツ|放題/;
+const labelsOf = (section) => [section.heading, section.time, section.title, ...(section.header ?? [])]
+  .map((text) => westernYear(norm(text)));
+// 見出し・時間帯・題・列見出しのどこかに日付がある表。通常の料金として読まない
+const isDated = (section) => labelsOf(section).some((text) => dateTokens(text).length);
+function tablePeriods(section) {
+  const label = norm(`${section.heading} ${section.time} ${section.title}`);
+  if (!TABLE_WORD.test(label) || CONDITIONAL.test(label)) return [];
+  return labelsOf(section).flatMap((text) => periodItems(text, true));
+}
+
+// 料金が変わる期間の告知のうち、今日から WINDOW_DAYS 日先までと重なるものを 1 つ返す。なければ null
+export function specialPeriod({ sections = [], notice = '', priceNotes = [] } = {}, today = dayOf()) {
+  const paragraphs = [notice, ...(priceNotes ?? []), ...(sections ?? []).map(sectionParagraph)];
+  // お知らせと表のない見出しは、そのとき出した告知。表の注記は、いつも載せている説明のことが多い
+  const posted = 1 + (priceNotes ?? []).length;
+  for (const [index, paragraph] of paragraphs.entries()) {
+    const sentences = sentencesOf(paragraph);
+    let around = null;
+    for (const sentence of sentences) {
+      const own = periodItems(sentence, true);
+      if (own.length) {
+        if (isDatedChange(sentence) && own.some((item) => overlapsWindow(item, today))) return sentence;
+        continue;
+      }
+      if (!isPriceChange(sentence)) continue;
+      // 日付が同じ文にない告知（「12/29～1/3」の次の行に「上記期間は特別料金」）は、同じ段落のほかの文の日付で判断する
+      around ??= sentences.flatMap((other) => periodItems(other, isPriceChange(other)));
+      if (around.some((item) => overlapsWindow(item, today))) return sentence;
+      // 「年末年始は特別料金となります」のように特別な時期の料金と言い切ったのに、期間の日付がない（チケットの配布日のような
+      // 意味の分からない日付しかない）告知は、いつの料金か分からないので出さない。表の注記の「お盆・特別期間は特別料金」
+      // 「特別料金の為クーポンの利用はできません」は、いつも載せている説明やプランの説明なので止めない
+      if (index < posted && isSeasonPrice(sentence) && around.every((item) => item.near)) return sentence;
+    }
+  }
+  for (const section of sections ?? []) {
+    if (tablePeriods(section).some((item) => overlapsWindow(item, today))) return labelsOf(section).join(' ');
+  }
+  // 特別な時期の料金の表や見出しなのに、期間の日付がどこにもない（いつの料金か分からない）
+  const undated = (paragraph) => !sentencesOf(paragraph).some((sentence) => dateTokens(sentence).length);
+  for (const note of priceNotes ?? []) {
+    const text = norm(note);
+    if (SEASON_LABEL.test(text) && PRICE_WORD.test(text) && !MAYBE.test(text) && undated(note)) return text;
+  }
+  for (const section of sections ?? []) {
+    const label = norm(`${section.heading} ${section.time} ${section.title}`);
+    if (SEASON_LABEL.test(label) && !MAYBE.test(label) && undated(sectionParagraph(section))) return label;
+  }
+  return null;
 }
 
 const CUSTOMERS = ['学生会員', '学生', '会員', 'シニア', '一般'];
 const ALERT_WORDS = /特別料金|特別期間|年末年始|お盆|GW|ゴールデンウィーク|繁忙/g;
 
-// { regular, solo, week } か { reason } を返す
-export function convertBigEcho(sections, hoursText) {
+// { regular, solo, week, alerts } か { reason } を返す。
+// options: notice（店舗からのお知らせ）、priceNotes（料金欄の表のない見出し）、today（'YYYY-MM-DD'。省略すると日本時間の今日）
+export function convertBigEcho(sections, hoursText, { notice = '', priceNotes = [], today } = {}) {
+  if (specialPeriod({ sections, notice, priceNotes }, dayOf(today))) return { reason: 'special-period' };
   const week = parseWeekHours(hoursText);
   if (!week) return { reason: 'no-hours' };
   const candidates = (sections ?? []).filter(isSlotSection);
   if (!candidates.length) return { reason: 'no-slot-table' };
-  // 税別と書いてある表は、税込の金額が併記されたセルだけなら使える
-  const taxFree = candidates.some((s) => /税[別抜]/.test(norm(`${s.heading} ${s.time} ${s.title} ${s.note} ${s.header.join(' ')}`))
-    && s.rows.some((row) => row.slice(1).some((cell) => norm(cell) && !/税込/.test(norm(cell)))));
-  if (taxFree) return { reason: 'tax-excluded' };
+  // 税別と書いてある表は、税込の金額が併記されたセルだけなら使える。どこかの表の説明や見出しに税別とある店は、
+  // フリータイムとパックも含めてどの表も同じに扱う
+  const shopTax = (sections ?? []).some((section) => TAX_FREE.test(norm(`${section.heading} ${section.time} ${section.title} ${section.note}`)))
+    || (priceNotes ?? []).some((text) => TAX_FREE.test(norm(text)));
+  if (candidates.some((section) => taxExcluded(section, shopTax))) return { reason: 'tax-excluded' };
+  // 注記にだけある 1 人の追加料金。読めない形の店は、1 人の金額を安く出さないように店ごと出さない
+  const soloExtras = candidates.map(soloNoteExtra);
+  if (soloExtras.some(Number.isNaN)) return { reason: 'solo-note' };
   const noteText = (sections ?? []).map((section) => norm(section.note)).join(' ');
   const allStudents = !STUDENT_IS_MEMBER.test(noteText);
-  const columns = candidates.flatMap((section) => readSection(section, allStudents) ?? []);
+  const bySection = candidates.map((section, index) => readSection(section, allStudents, soloExtras[index]) ?? []);
+  // 注記に 1 人の追加料金がある 30 分表と、1 人の金額が何も書いていない 30 分表（朝の表など）が同じ店にあると、
+  // 書いていない時間帯の 1 人の金額が分からない（通常の金額で出すと追加料金のぶん安く見える）
+  if (soloExtras.some((extra) => typeof extra === 'number')
+    && bySection.some((cols, index) => soloExtras[index] === null && cols.length && cols.every((column) => column.solo === null))) {
+    return { reason: 'solo-note' };
+  }
+  const columns = bySection.flat();
   if (!columns.length) return { reason: 'unreadable-table' };
   const built = buildPlans(columns);
   if (!built) return { reason: 'unreadable-days' };
   const problem = checkCoverage(built.plans, week);
   if (problem) return { reason: problem };
-  const fixed = buildFixed((sections ?? []).flatMap((section) => readFixed(section, allStudents).columns ?? []));
+  const fixed = buildFixed((sections ?? []).flatMap((section) => readFixed(section, allStudents, shopTax).columns ?? []));
   const tables = (slot, free) => [
     { band: '30分', customers: CUSTOMERS, plans: slot, note: '' },
     ...(free.length ? [{ band: 'フリータイム', customers: CUSTOMERS, plans: free, note: '' }] : []),
   ];
-  const alerts = [...new Set(candidates.flatMap((s) => norm(`${s.title} ${s.note}`).match(ALERT_WORDS) ?? []))];
+  // 告知の語。お知らせと表のない見出しからは、料金の告知の文だけから拾う
+  const noticeText = [notice, ...(priceNotes ?? [])].flatMap(sentencesOf).filter(isPriceChange).join(' ');
+  const alerts = [...new Set([...candidates.flatMap((s) => norm(`${s.title} ${s.note}`).match(ALERT_WORDS) ?? []),
+    ...(noticeText.match(ALERT_WORDS) ?? [])])];
   return {
     regular: tables(built.plans, fixed.plans),
     solo: built.solos.length || fixed.solos.length ? tables(built.solos, fixed.solos) : [],

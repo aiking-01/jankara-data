@@ -21,6 +21,10 @@ const JOYSOUND_TODAY = /^\d{4}-\d{2}-\d{2}$/.test(process.env.CONVERT_DATE ?? ''
 const TARGETS = {
   joysound: ['joysound_prices.json', (shop) => convertJoysoundShop(shop, { today: JOYSOUND_TODAY })],
   bigecho: ['chain_prices.json', (shop) => convertBigEcho(shop.sections, shop.hours)],
+  joysound: ['joysound_prices.json', (shop) => convertJoysound(shop.sections, shop.opening_hours)],
+  // 料金が変わる期間の告知は、日本時間の今日から 21 日先までと重なるかで見る（CONVERT_TODAY=YYYY-MM-DD で差し替えられる）
+  bigecho: ['chain_prices.json', (shop) => convertBigEcho(shop.sections, shop.hours,
+    { notice: shop.notice, priceNotes: shop.price_notes, today: process.env.CONVERT_TODAY })],
   maneki: ['maneki_prices.json', (shop) => convertManeki(shop.tables)],
   // メガビッグは表の外の告知・リンク・読めなかった表も渡す。変換する日は CONVERT_TODAY（YYYY-MM-DD）で差し替えられる
   megabig: ['megabig_prices.json', (shop) => reportMegabig(shop.page, convertMegabig(shop.sections, shop.hours, shop))],
