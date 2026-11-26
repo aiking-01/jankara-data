@@ -1,8 +1,19 @@
 #!/usr/bin/env python3
-"""コート・ダジュールの公式料金JSONを取得して保存する。
+"""コート・ダジュールの公式料金JSONを取得して保存する。金額への変換は web/cotedazur.js が行う。
 
 店舗ページの JavaScript が /public/{shop_code}_price.json を取得して
 料金表を表示するため、その同じJSONを店舗IDごとに保存する。
+
+- 店ごとに 3 日に 1 回、古い順に取る（crawl_plan.py）。前回と同じ JSON なら ETag で中身を受け取らない。
+- 取った店のどれかで公式の料金表が変わっていたら、そのほかの「通常料金」1 期間の店（アプリに金額を配る店）も
+  その回のうちに取り直す。公式は年末年始などの期間別の料金に全店そろって切り替えるので、3 日に 1 回のままだと
+  切り替わった後も最長 3 日、前回の通常料金を配ってしまうため。
+- タイムアウト、接続エラー、本文の欠け（Content-Length と長さが違う）は net.Fetcher が新しい接続で読み直す。
+  それでもだめなとき、5xx、途中で切れた JSON は通信の失敗として前回の記録を残す
+  （確かめた日時は進まないので、14 日で publish.py が配らなくなる）。通信の失敗が 5 店続いたら残りは取らない。
+- 料金JSONがない（404）、または取れたのに読めないときは、前回の金額を残さず「料金なし」の記録にする。
+- 403 / 429 / 503 は公式サイトの制限とみなして、残りの店は取らない。
+- 締め切り（CRAWL_DEADLINE）を過ぎたら、残りの店は取らずに、取れた分を保存して終わる。
 """
 from __future__ import annotations
 
@@ -17,24 +28,24 @@ from urllib.parse import urlsplit
 
 import requests
 
+import crawl_plan
+import net
+
 ROOT = Path(__file__).resolve().parents[1]
 DATA_FILE = ROOT / "source" / "cotedazur_prices.json"
 SHOPS_FILE = ROOT / "chains.json"
 BASE_URL = "https://www.cotedazur.jp/public/"
 USER_AGENT = "karaoke-auto-getter/1.0 (public price data; GitHub Actions)"
 DELAY = 1.0
-TIMEOUT = 30
-MIN_RATIO = 0.8
+THROTTLED_CODES = (403, 429, 503)
+MAX_STREAK = 5  # 通信の失敗がこの店数続いたら、残りの店は今回は取らない
+SOURCE = "source/cotedazur_prices.json"  # crawl_plan.py と seen.json での名前
 SCHEMA_VERSION = 1
 PRICE_GROUPS = ("noon_weekday", "noon_weekend", "night_weekday", "night_weekend")
 PRICE_FIELD = re.compile(r"(?:_30|_tax|_normal|_student|_ordinary)$|^ftfd_")
 
 
 class Throttled(Exception):
-    pass
-
-
-class NoPriceData(Exception):
     pass
 
 
@@ -115,6 +126,18 @@ def validate_payload(shop_id: str, payload: dict) -> None:
         raise ValueError("30分料金がありません")
 
 
+def deliverable(record: dict | None) -> bool:
+    """変換（web/cotedazur.js）が金額を配りうる記録か。「通常料金」1 期間の店だけが配られる。"""
+    plans = (record or {}).get("price_plan")
+    return (isinstance(plans, list) and len(plans) == 1 and isinstance(plans[0], dict)
+            and unicodedata.normalize("NFKC", str(plans[0].get("label_name", ""))).strip() == "通常料金")
+
+
+def plan_changed(old: dict | None, record: dict) -> bool:
+    """料金を読めていた店の料金表（price_plan）が、今回取ったもので変わったか。"""
+    return bool(old and old.get("price_plan")) and record.get("price_plan") != old.get("price_plan")
+
+
 def save(shops: dict, updated_at: int) -> None:
     payload = {"schema_version": SCHEMA_VERSION, "updated_at": updated_at,
                "shops": dict(sorted(shops.items()))}
@@ -123,30 +146,58 @@ def save(shops: dict, updated_at: int) -> None:
     os.replace(temp, DATA_FILE)
 
 
-def fetch_one(session: requests.Session, shop_id: str, shop: dict, previous: dict | None):
+def no_price(shop_id: str, shop: dict, reason: str) -> dict:
+    """ページは取れたのに料金を読めない店の記録。前回の金額は残さない（アプリは「料金表を見る」になる）。"""
+    return {
+        "shop_code": int(shop_id.removeprefix("cd-")),
+        "shop_name": shop.get("name") or shop_id,
+        "price_plan": [],
+        "no_price": reason[:120],
+        "page": shop["url"],
+        "checked_at": int(time.time()),
+    }
+
+
+def fetch_one(fetcher: net.Fetcher, shop_id: str, shop: dict, previous: dict | None) -> dict:
+    """1 店の料金 JSON を取る。通信の失敗は requests の例外を投げる（呼び出し側が前回の記録を残す）。"""
     code = shop_id.removeprefix("cd-")
     url = f"{BASE_URL}{code}_price.json"
     headers = {}
-    if previous and previous.get("etag"):
-        headers["If-None-Match"] = previous["etag"]
-    if previous and previous.get("last_modified"):
-        headers["If-Modified-Since"] = previous["last_modified"]
+    # 料金を読めた記録があるときだけ、変わっていなければ中身を受け取らない
+    if previous and previous.get("price_plan"):
+        if previous.get("etag"):
+            headers["If-None-Match"] = previous["etag"]
+        if previous.get("last_modified"):
+            headers["If-Modified-Since"] = previous["last_modified"]
     time.sleep(DELAY)
-    response = session.get(url, headers=headers, timeout=TIMEOUT)
-    if response.status_code in (403, 429, 503):
-        raise Throttled(f"HTTP {response.status_code}")
-    if response.status_code == 404:
-        raise NoPriceData("公式の料金JSONなし")
-    if response.status_code == 304:
-        if not previous:
-            raise ValueError("初回取得で HTTP 304 が返りました")
+    response = fetcher.get(url, headers=headers)
+    status = response.status_code
+    if status in THROTTLED_CODES:
+        raise Throttled(f"HTTP {status}")
+    if status >= 500:
+        raise requests.HTTPError(f"HTTP {status}")
+    if status == 304:
+        if not headers:
+            raise requests.HTTPError("前回の記録がないのに HTTP 304 が返りました")
         return {**previous, "checked_at": int(time.time())}
-    response.raise_for_status()
-    final = urlsplit(response.url)
+    if status == 404:
+        return no_price(shop_id, shop, "公式の料金JSONなし")
+    if status != 200:
+        return no_price(shop_id, shop, f"料金JSONが HTTP {status}")
+    final = urlsplit(getattr(response, "url", "") or url)
     if final.scheme != "https" or final.hostname != "www.cotedazur.jp":
-        raise ValueError(f"想定外の転送先: {response.url}")
-    payload = response.json()
-    validate_payload(shop_id, payload)
+        return no_price(shop_id, shop, f"想定外の転送先: {final.geturl()}")
+    body = response.content.strip()
+    if body.startswith(b"{") and not body.endswith(b"}"):
+        # 長さの書かれていない応答が途中で切れたもの。読めない料金表ではなく通信の失敗として前回の記録を残す
+        raise net.Incomplete(f"料金JSONが途中までしか届いていません ({len(body)} バイト)")
+    try:
+        payload = json.loads(body)
+        if not isinstance(payload, dict):
+            raise ValueError("料金JSONの形式が違います")
+        validate_payload(shop_id, payload)
+    except (ValueError, KeyError, TypeError) as error:
+        return no_price(shop_id, shop, f"料金JSONを読めません: {error}")
     return {
         **payload,
         "page": shop["url"],
@@ -157,49 +208,68 @@ def fetch_one(session: requests.Session, shop_id: str, shop: dict, previous: dic
 
 
 def update(log=print) -> bool:
+    """今回取る店（crawl_plan.py）を取り直して保存する。通信に失敗した店だけ前回の記録を残す。"""
     shops = load_shops()
     if not shops:
         raise ValueError("店舗一覧にコート・ダジュールがありません")
     previous_doc = load_previous()
     previous = previous_doc["shops"]
     current = {shop_id: previous[shop_id] for shop_id in shops if shop_id in previous}
-    session = requests.Session()
-    session.headers["User-Agent"] = USER_AGENT
-    verified = failures = unsupported = 0
-    throttled = False
-
-    for shop_id, shop in shops.items():
+    now = int(time.time())
+    # 店ごとに 3 日に 1 回、古い順に取る（crawl_plan.py）
+    queue = crawl_plan.due(list(shops), previous.get, SOURCE, now)
+    fetcher = net.Fetcher(USER_AGENT, label="コート・ダジュール")
+    verified = unsupported = failures = streak = 0
+    stopped = ""
+    rechecked = False
+    index = 0
+    while index < len(queue):
+        shop_id = queue[index]
+        if streak >= MAX_STREAK:
+            stopped = f"通信の失敗が {streak} 店続いたので、残りの {len(queue) - index} 店は今回は取りません"
+            failures += len(queue) - index
+            break
         old = previous.get(shop_id)
         try:
-            current[shop_id] = fetch_one(session, shop_id, shop, old)
-            verified += 1
-        except Throttled as error:
-            failures += len(shops) - verified - failures - unsupported
-            log(f"  公式サイトの制限で停止: {error}")
-            throttled = True
+            record = fetch_one(fetcher, shop_id, shops[shop_id], old)
+        except net.OutOfTime:
+            stopped = f"締め切りを過ぎたので、残りの {len(queue) - index} 店は今回は取りません"
             break
-        except NoPriceData as error:
-            unsupported += 1
-            if old:
-                failures += 1
-                current[shop_id] = old
-                log(f"  料金JSONなし、前回値を保持 {shop_id} ({error})")
-            else:
-                log(f"  料金JSONなし、配信対象外 {shop_id} ({error})")
-        except (requests.RequestException, ValueError, KeyError, TypeError) as error:
+        except Throttled as error:
+            stopped = f"公式サイトの制限で停止 ({error})。残りの {len(queue) - index} 店は今回は取りません"
+            failures += len(queue) - index
+            break
+        except requests.RequestException as error:
             failures += 1
-            log(f"  取得失敗 {shop_id} ({error})")
-            if old:
-                current[shop_id] = old
-
-    required = max(1, int(len(shops) * MIN_RATIO + 0.999))
-    if verified < required:
-        log(f"コート・ダジュール: 確認できた店が少ないため前回の値を残します ({verified}/{len(shops)}、必要 {required})")
-        return False
-    updated_at = previous_doc["updated_at"] if failures else int(time.time())
-    save(current, updated_at)
-    log(f"コート・ダジュール: {len(current)}/{len(shops)} 店 (確認 {verified}、対象外 {unsupported}、失敗 {failures})")
-    return failures == 0 and not throttled
+            streak += 1
+            index += 1
+            log(f"  取得失敗、前回の記録を残します {shop_id} ({type(error).__name__}: {error})")
+            continue
+        streak = 0
+        index += 1
+        current[shop_id] = record
+        if record.get("no_price"):
+            unsupported += 1
+            log(f"  料金なし {shop_id} ({record['no_price']})")
+        else:
+            verified += 1
+        if not rechecked and plan_changed(old, record):
+            # 公式の料金表が変わった。期間別の料金への切り替えは全店そろって起きるので、金額を配っている
+            # 「通常料金」1 期間の店を今回のうちに確かめ直す（変わっていなければ 304 で中身は受け取らない）。
+            # 失敗が続いて間をあけている店は crawl_plan.py が外す
+            rechecked = True
+            rest = [key for key in shops if key not in queue and deliverable(current.get(key))]
+            more = crawl_plan.due(rest, previous.get, SOURCE, now, force=lambda key: True) if rest else []
+            if more:
+                log(f"  {shop_id} の料金表が変わったので、通常料金の {len(more)} 店も今回確かめます")
+                queue = queue + [key for key in more if key not in queue]
+    if stopped:
+        log(f"  {stopped}")
+    complete = not failures and not stopped
+    save(current, int(time.time()) if complete else previous_doc["updated_at"])
+    log(f"コート・ダジュール: {len(current)}/{len(shops)} 店 (今回 {len(queue)} 店: 確認 {verified}、料金なし {unsupported}、"
+        f"失敗 {failures}、通信 {fetcher.bytes / 1e6:.1f}MB)")
+    return failures == 0
 
 
 if __name__ == "__main__":

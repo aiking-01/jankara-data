@@ -73,6 +73,7 @@ JOYJOY_INCLUDED = re.compile(r"☆(?:(?:昼|夜|深夜)\d{1,2}時間フリーは
 JOYJOY_DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
 COTE_PRICE_FIELD = re.compile(r"(?:_30|_tax|_normal|_student|_ordinary)$|^ftfd_")
 COTE_PRICE_GROUPS = ("noon_weekday", "noon_weekend", "night_weekday", "night_weekend")
+COTE_SWITCH = re.compile(r"(\d{2}):(00|30)(?::00)?")
 MAX_ISSUES = 40
 # 公開前の修復（--repair）。人の確認を待たずに、異常のあった店かチェーンだけを止めて残りを公開する。
 REPAIR = False
@@ -451,11 +452,76 @@ def _joysound_raw(item, key, issues):
         issues.append(f"{key}: 通常の30分料金がありません")
 
 
+_COTE_RAW_CACHE: dict = {}
+
+
+def _cotedazur_raw() -> dict:
+    """今の元データ（変換に使ったもの）の店。修復で書き換わったら読み直す。読めなければ空"""
+    path = ROOT / RAW["cotedazur_prices"]
+    try:
+        stat = path.stat()
+        stamp = (stat.st_mtime_ns, stat.st_size)
+        if _COTE_RAW_CACHE.get("stamp") != stamp:
+            shops = json.loads(path.read_text(encoding="utf-8")).get("shops")
+            _COTE_RAW_CACHE.update(stamp=stamp, shops=shops if isinstance(shops, dict) else {})
+        return _COTE_RAW_CACHE["shops"]
+    except (OSError, ValueError, AttributeError):
+        return {}
+
+
+def _cotedazur_built(item, key, issues):
+    """配る側の形を確かめる。金額の範囲と前回との差は _generated が見る。
+
+    元データが「通常料金」1 期間の店だけが配られていること。昼夜の切り替え時刻は、昼と夜とヒトカラで
+    そろっていて、元データの switching_time と一致すること。
+    """
+    clocks = set()
+    for kind in ("regular", "solo"):
+        tables = item.get(kind)
+        if (not isinstance(tables, list) or len(tables) != 1 or not isinstance(tables[0], dict)
+                or not isinstance(tables[0].get("plans"), list) or len(tables[0]["plans"]) != 2
+                or any(not isinstance(plan, dict) for plan in tables[0]["plans"])):
+            issues.append(f"{key}: {kind} の料金表の形が違います")
+            return
+        noon, night = tables[0]["plans"]
+        day = re.fullmatch(r"開店～(\d{2}:(?:00|30))", str(noon.get("hours", "")))
+        evening = re.fullmatch(r"(\d{2}:(?:00|30))～閉店", str(night.get("hours", "")))
+        if not day or not evening or day[1] != evening[1] or not 15 <= int(day[1][:2]) <= 21:
+            issues.append(f"{key}: {kind} の昼夜の切り替え時刻が不正")
+            return
+        clocks.add(day[1])
+    if len(clocks) != 1:
+        issues.append(f"{key}: 通常料金とヒトカラ料金で昼夜の切り替え時刻が違います")
+        return
+    raw = _cotedazur_raw().get(key)
+    if not isinstance(raw, dict):
+        return  # 修復で元データから外した直後の店。変換し直した後の検査で消えている
+    plans = raw.get("price_plan")
+    if not isinstance(plans, list) or len(plans) != 1 or not isinstance(plans[0], dict):
+        # 変換は期間別の料金（年末年始など）や料金なしの記録を読まない。配る側にあれば変換の誤り
+        issues.append(f"{key}: 元データが通常料金 1 期間ではないのに配られています")
+        return
+    switch = COTE_SWITCH.fullmatch(str(plans[0].get("switching_time", "")))
+    if not switch or f"{switch[1]}:{switch[2]}" not in clocks:
+        issues.append(f"{key}: 昼夜の切り替え時刻が元データと一致しません")
+
+
 def _cotedazur_prices(item, old, key, issues):
+    # 配る側（build）の記録は、公式JSONの price_plan と一緒に regular / solo を持つ。形を確かめてから、
+    # price_plan は元データと同じく確かめる
+    if "regular" in item or "solo" in item:
+        _cotedazur_built(item, key, issues)
+        if "price_plan" not in item:
+            return
     if not key.startswith("cd-") or type(item.get("shop_code")) is not int or str(item["shop_code"]) != key.removeprefix("cd-"):
         issues.append(f"{key}: 店舗コードと料金IDが一致しません")
     if not _string(item.get("shop_name"), 120):
         issues.append(f"{key}: 料金JSONの店舗名が不正")
+    if "no_price" in item:
+        # 料金JSONがない、または取れたのに読めなかった店。金額を持たないので、配る側には入らない
+        if not _string(item.get("no_price"), 120) or item.get("price_plan") != []:
+            issues.append(f"{key}: 料金なしの記録が不正")
+        return
     plans = item.get("price_plan")
     if not isinstance(plans, list) or not plans or len(plans) > 30:
         issues.append(f"{key}: price_plan が空、または形式が不正")
