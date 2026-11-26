@@ -35,6 +35,7 @@ TRACKED = {
     "joysound": "source/joysound_prices.json",
     "cotedazur": "source/cotedazur_prices.json",
     "joyjoy": "source/joyjoy_prices.json",
+    "utahiro": "source/utahiro_prices.json",
 }
 
 

@@ -18,13 +18,13 @@ from pathlib import Path
 REQUIRED = ("chains", "jankara")
 # 料金のファイルは、配れる店がなくなると publish.py が manifest に載せない（期間限定の料金や、長く確かめられない店を外した結果）。
 # 載っているときは基本と同じ完全性検証を行う
-OPTIONAL = ("bigecho", "maneki", "kan", "megabig", "joyjoy", "joysound", "cotedazur", "banban", "round1")
+OPTIONAL = ("bigecho", "maneki", "kan", "megabig", "joyjoy", "joysound", "cotedazur", "banban", "round1", "utahiro")
 KNOWN = frozenset(REQUIRED + OPTIONAL)
 # BanBan/ROUND1は目視承認後に更新されるため鮮度ではなく完全性だけ監視。
 # 店の一覧は週 1 回しか取り直さず、古くなっても誤った金額にはならないので鮮度は見ない（完全性だけ確かめる）。
 # 料金のファイルは publish.py が店ごとに最後に確かめた日時まで checked_at を進める（毎回 3 分の 1 ずつ確かめる）
 REFRESHED = frozenset({"jankara", "bigecho", "maneki", "megabig",
-                      "joyjoy", "joysound", "cotedazur"})
+                      "joyjoy", "joysound", "cotedazur", "utahiro"})
 
 
 MAX_XZ_BYTES = 16 * 1024 * 1024

@@ -32,13 +32,16 @@ RAW = {
     "megabig_prices": "source/megabig_prices.json",
     "ocr": "source/ocr.json",
     "joyjoy_prices": "source/joyjoy_prices.json",
+    "utahiro_prices": "source/utahiro_prices.json",
 }
+# 取得を始める前はファイルがない元データ（空として検査する）
+OPTIONAL_RAW = {"utahiro_prices"}
 BUILT = {"chains": RAW["chains"], "jankara": RAW["prices"],
          "bigecho": "build/bigecho.json", "maneki": "build/maneki.json",
          "megabig": "build/megabig.json",
          "kan": "build/kan.json", "joyjoy": "build/joyjoy.json",
          "joysound": "build/joysound.json", "cotedazur": "build/cotedazur.json", "banban": RAW["banban_prices"],
-         "round1": "build/round1.json"}
+         "round1": "build/round1.json", "utahiro": "build/utahiro.json"}
 PREFIX = {
     "ビッグエコー": ("be-", "shop.big-echo.jp"),
     "カラオケ館": ("kan-", "karaokekan.jp"),
@@ -57,6 +60,8 @@ JAPANESE_REGION = re.compile(r"^(?:北海道|東京都|大阪府|京都府|.{2,3
 NO_HTML = re.compile(r"<(?:html|body|title|script|div|h[1-6]|!doctype)\b|(?:502 Bad Gateway|Access Denied|404 Not Found)", re.I)
 PRICE_TEXT = re.compile(r"^(?:[¥￥]?\s*)?(\d{1,3}(?:,\d{3})*|\d+)(?:\s*円)?$")
 MINIMUM_PRICE_TEXT = re.compile(r"^[¥￥]\s*(\d[\d,]*)~$")
+UTAHIRO_PAGE = re.compile(r"^/shops/st_[a-z0-9_]+/\d+$")
+WEEK_KEYS = {"月", "火", "水", "木", "金", "土", "日", "祝前", "日祝"}
 COTE_PRICE_FIELD = re.compile(r"(?:_30|_tax|_normal|_student|_ordinary)$|^ftfd_")
 COTE_PRICE_GROUPS = ("noon_weekday", "noon_weekend", "night_weekday", "night_weekend")
 MAX_ISSUES = 40
@@ -73,7 +78,7 @@ QUARANTINE: dict[str, dict] = {}
 SOURCE_OF_BUILD = {"chains": "chains", "jankara": "prices", "bigecho": "chain_prices", "maneki": "maneki_prices",
                    "megabig": "megabig_prices", "kan": "ocr", "joyjoy": "joyjoy_prices",
                    "joysound": "joysound_prices", "cotedazur": "cotedazur_prices", "banban": "banban_prices",
-                   "round1": None}
+                   "round1": None, "utahiro": "utahiro_prices"}
 
 
 class DataRejected(ValueError):
@@ -550,6 +555,95 @@ def _megabig_raw(item, old, key, issues):
         issues.append(f"{key}: 料金ページ URL が異常")
 
 
+def _text(value, max_len):
+    """空でもよい文字列。HTML や壊れた文字が紛れていないこと"""
+    return (isinstance(value, str) and len(value) <= max_len and not NO_HTML.search(value)
+            and "\ufffd" not in value and all(ord(char) >= 32 or char == "\n" for char in value))
+
+
+def _utahiro_prices_of(bands) -> dict:
+    """表の金額の文字を、位置（帯・コース・表・行・列）ごとの金額にする。金額に見えない文字は飛ばす"""
+    values = {}
+    for bi, band in enumerate(bands if isinstance(bands, list) else []):
+        courses = band.get("courses") if isinstance(band, dict) else None
+        for ci, course in enumerate(courses if isinstance(courses, list) else []):
+            tables = course.get("tables") if isinstance(course, dict) else None
+            for ti, table in enumerate(tables if isinstance(tables, list) else []):
+                rows = table.get("rows") if isinstance(table, dict) else None
+                for ri, row in enumerate(rows if isinstance(rows, list) else []):
+                    for vi, text in enumerate(row[1:] if isinstance(row, list) else [], 1):
+                        match = PRICE_TEXT.fullmatch(unicodedata.normalize("NFKC", str(text)).replace(" ", ""))
+                        if match:
+                            values[(bi, ci, ti, ri, vi)] = int(match[1].replace(",", ""))
+    return values
+
+
+def _utahiro_raw(item, old, key, issues):
+    """歌広場の店のページから取った文字。意味（見出し・曜日・告知）は変換器が決まった形だけを読み、知らない形の店は
+    配らないので、ここでは形と、HTML や料金に見えない巨大な金額が紛れていないかだけを見る。
+    表がなくなった店（閉店や作りの変わったページ）も料金なしの記録として受け入れる（変換器が配らない）。"""
+    if not key.startswith("uh-"):
+        issues.append(f"{key}: 歌広場以外の料金情報")
+        return
+    page = item.get("page")
+    parsed = urlsplit(page) if isinstance(page, str) else None
+    if (not parsed or parsed.scheme != "https" or parsed.hostname != "www.utahiro.com"
+            or not UTAHIRO_PAGE.fullmatch(parsed.path)):
+        issues.append(f"{key}: 歌広場の店のページ URL が不正")
+    if type(item.get("checked_at")) is not int or item["checked_at"] <= 0:
+        issues.append(f"{key}: checked_at が不正")
+    if not _text(item.get("hours"), 300):
+        issues.append(f"{key}: 営業時間が不正")
+    if item.get("missing") is not None and not _string(item.get("missing"), 200):
+        issues.append(f"{key}: 料金表がない理由が不正")
+    for field, limit in (("notices", 400), ("tail", 3000), ("extras", 200)):
+        values = item.get(field)
+        if not isinstance(values, list) or len(values) > 40 or any(not _string(value, limit) for value in values):
+            issues.append(f"{key}: {field} が不正")
+    bands = item.get("bands")
+    if not isinstance(bands, list) or len(bands) > 10:
+        issues.append(f"{key}: 料金表の帯が不正")
+        return
+    for bi, band in enumerate(bands):
+        path = f"{key}.bands[{bi}]"
+        if (not isinstance(band, dict) or not _string(band.get("label"), 80) or not isinstance(band.get("courses"), list)
+                or not isinstance(band.get("images"), list) or any(not _string(src, 300) for src in band["images"])):
+            issues.append(f"{path}: 帯の形式が不正")
+            continue
+        for ci, course in enumerate(band["courses"]):
+            if not isinstance(course, dict) or not _string(course.get("name"), 80) or not isinstance(course.get("tables"), list):
+                issues.append(f"{path}.courses[{ci}]: コースの形式が不正")
+                continue
+            for ti, table in enumerate(course["tables"]):
+                where = f"{path}.courses[{ci}].tables[{ti}]"
+                header = table.get("header") if isinstance(table, dict) else None
+                rows = table.get("rows") if isinstance(table, dict) else None
+                if (not isinstance(table, dict) or not _string(table.get("title"), 120)
+                        or (header is not None and (not isinstance(header, list) or len(header) > 8
+                                                    or any(not _text(cell, 120) for cell in header)))
+                        or not isinstance(rows, list) or len(rows) > 12):
+                    issues.append(f"{where}: 表の形式が不正")
+                    continue
+                for row in rows:
+                    if not isinstance(row, list) or len(row) > 8 or any(not _text(cell, 60) for cell in row):
+                        issues.append(f"{where}: 行の形式が不正")
+    values = _utahiro_prices_of(bands)
+    huge = sorted(position for position, amount in values.items() if amount > 30000)
+    if huge:
+        issues.append(f"{key}: 料金に見えない巨大な金額 {huge[0]}")
+    if old:
+        _price_delta(_utahiro_prices_of(old.get("bands")), values, key, issues)
+
+
+def _utahiro_built(item, key, issues):
+    """配る側の歌広場の店。金額は _generated が見る。アプリは week で開店・閉店を決めるので、その形も見る"""
+    week = item.get("week")
+    if (not isinstance(week, dict) or set(week) != WEEK_KEYS
+            or any(not isinstance(value, list) or len(value) != 2 or any(type(x) is not int for x in value)
+                   or not 0 <= value[0] < 1440 or not value[0] < value[1] <= value[0] + 1440 for value in week.values())):
+        issues.append(f"{key}: 営業時間（week）が不正")
+
+
 def _ocr(item, old, key, issues):
     if item.get("chain") not in ("カラオケ館", "まねきねこ"):
         issues.append(f"{key}: OCR チェーンが不正")
@@ -675,7 +769,7 @@ def _joyjoy(item, old, key, issues, *, require_checked_at=False):
 def _validate_doc(name, current, previous, issues, *, allow_empty_old=False, built=False):
     # 配る側（build）は、変換が読まない店や長く確かめていない店を外すので空になってよい
     fresh = _records(current, name, allow_empty=built or name not in ("chains", "prices"))
-    old = _records(previous, name, allow_empty=built or allow_empty_old or name in ("megabig_prices", "megabig", "cotedazur_prices", "cotedazur"))
+    old = _records(previous, name, allow_empty=built or allow_empty_old or name in ("megabig_prices", "megabig", "cotedazur_prices", "cotedazur", "utahiro_prices", "utahiro"))
     old_count, fresh_count = len(old), len(fresh) + len(REPAIRED.get(name, ()))
     held = QUARANTINE.get(name, {}) if not built else {}
     # 取得の失敗は元データの店数で止める。配る側の減少は変換が読まなくなった店なので、修復では止めない
@@ -750,6 +844,11 @@ def _validate_doc(name, current, previous, issues, *, allow_empty_old=False, bui
                     issues.append(f"{key}: 条件付きプランの日別料金が不正")
         elif name in ("joyjoy_prices", "joyjoy"):
             _joyjoy(item, was, key, issues, require_checked_at=(name == "joyjoy_prices"))
+        elif name == "utahiro_prices":
+            _utahiro_raw(item, was, key, issues)
+        elif name == "utahiro":
+            _generated(item, was, key, issues)
+            _utahiro_built(item, key, issues)
         else:
             _generated(item, was, key, issues)
     return fresh, len(changed)
@@ -767,8 +866,12 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
     WARNINGS.clear()
     raw = {}
     for name, file in RAW.items():
-        current = _json_bytes((ROOT / file).read_bytes(), file)
-        missing_base = name in ("joyjoy_prices", "joysound_prices", "cotedazur_prices", "banban_prices", "megabig_prices") and _missing_at_reference(reference, file)
+        if name in OPTIONAL_RAW and not (ROOT / file).exists():
+            current = {"schema_version": 1, "updated_at": 0, "shops": {}}
+        else:
+            current = _json_bytes((ROOT / file).read_bytes(), file)
+        missing_base = name in ("joyjoy_prices", "joysound_prices", "cotedazur_prices", "banban_prices", "megabig_prices",
+                                "utahiro_prices") and _missing_at_reference(reference, file)
         previous = ({"schema_version": 1, "updated_at": 0, "shops": {}} if missing_base
                     else _json_bytes(_old_bytes(reference, file), f"{reference}:{file}"))
         start = len(issues)
@@ -800,6 +903,13 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
         elif known[key].get("url") != row.get("page"):
             issues.append(f"joyjoy_prices/{key}: 料金表URLが店舗一覧と一致しません")
     _tag(issues, start, "joyjoy_prices")
+    start = len(issues)
+    for key, row in raw["utahiro_prices"].items():
+        if not key.startswith("uh-") or key not in known or known[key].get("chain") != "歌広場":
+            issues.append(f"utahiro_prices/{key}: 店舗一覧にない歌広場の店")
+        elif known[key].get("url") != row.get("page"):
+            issues.append(f"utahiro_prices/{key}: 料金表URLが店舗一覧と一致しません")
+    _tag(issues, start, "utahiro_prices")
     if stage == "full":
         for name, file in BUILT.items():
             if name in ("chains", "jankara"):
@@ -810,7 +920,7 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
                     issues.append("round1: 以前の配信データが突然消えています")
                 continue
             current = _json_bytes((ROOT / file).read_bytes(), file)
-            missing_base = name in ("joyjoy", "joysound", "cotedazur", "banban", "round1", "megabig") and _missing_at_reference(reference, old_file)
+            missing_base = name in ("joyjoy", "joysound", "cotedazur", "banban", "round1", "megabig", "utahiro") and _missing_at_reference(reference, old_file)
             if missing_base:
                 previous = {"schema_version": 1, "updated_at": 0, "shops": {}}
             else:
@@ -822,7 +932,8 @@ def run_validation(reference: str, stage: str) -> tuple[list[str], list[str]]:
             start = len(issues)
             fresh, changes = _validate_doc(name, current, previous, issues, allow_empty_old=missing_base, built=True)
             chain = {"bigecho": "ビッグエコー", "maneki": "まねきねこ", "kan": "カラオケ館", "megabig": "メガビッグ",
-                     "joyjoy": "JOYJOY", "joysound": "JOYSOUND", "cotedazur": "コート・ダジュール", "banban": "BanBan", "round1": "ROUND1"}[name]
+                     "joyjoy": "JOYJOY", "joysound": "JOYSOUND", "cotedazur": "コート・ダジュール", "banban": "BanBan", "round1": "ROUND1",
+                     "utahiro": "歌広場"}[name]
             for key, item in fresh.items():
                 if key not in known or known[key].get("chain") != chain:
                     if key not in _records(previous, name, allow_empty=missing_base):
