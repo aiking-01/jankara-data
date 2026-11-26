@@ -1,19 +1,12 @@
 name: Read ROUND1 B-30 price images
 
 # 未登録時は成功扱いで終了し、未承認・画像変更時は公開を停止する。
+# コードや確認済み画像を変えても動かさない。毎日の定期実行で取り込む
 on:
   workflow_dispatch:
   schedule:
-    - cron: '50 22 * * *'
-  push:
-    branches:
-      - main
-    paths:
-      - '.github/workflows/round1-b30.yml'
-      - 'ocr/round1_b30_targets.json'
-      - 'ocr/round1_b30_reviewed/**'
-      - 'ocr/run_round1_b30.py'
-      - 'scripts/extract_round1_b30.py'
+    # 3 日に 1 回。料金画像はめったに変わらないので、公式サイトへのリクエストを抑える
+    - cron: '50 22 */3 * *'
 
 permissions:
   contents: write

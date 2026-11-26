@@ -13,6 +13,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import requests
+
+import crawl_plan
 from bs4 import BeautifulSoup
 
 import update_chains
@@ -24,7 +26,6 @@ ALLOWED_HOST = "www.joyjoy.co.jp"
 SCHEMA_VERSION = 1
 DELAY = 0.5
 PARALLEL = 4
-RECHECK_SECONDS = 20 * 3600
 MIN_RATIO = 0.8
 SAVE_EVERY = 20
 PRICE = re.compile(r"^(?:[¥￥])?\s*(\d[\d,]*)\s*(?:円)?\s*[~～〜]$")
@@ -189,9 +190,9 @@ def update(log=print) -> bool:
         previous_updated_at = json.loads(DATA_FILE.read_text(encoding="utf-8")).get("updated_at", 0)
     now = int(time.time())
     shops = dict(previous)
-    due = [key for key, item in joyjoy.items()
-           if now - shops.get(key, {}).get("checked_at", 0) >= RECHECK_SECONDS
-           or shops.get(key, {}).get("page") != item.get("url")]
+    # 店ごとに 3 日に 1 回、古い順に取る（crawl_plan.py）。URL が変わった店は毎回取る
+    due = crawl_plan.due(list(joyjoy), shops.get, "source/joyjoy_prices.json", now,
+                         force=lambda key: shops.get(key, {}).get("page") != joyjoy[key].get("url"))
     pacer = RequestPacer(DELAY)
     throttled = threading.Event()
 

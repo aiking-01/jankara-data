@@ -9,14 +9,10 @@ on:
       - 'scripts/run_banban_ocr.py'
       - 'tests/banban_ocr_ci.py'
       - 'ocr/banban_approved.json'
+  # コードの変更では動かさない（テストは data-safety.yml）。料金画像か承認の記録が増えたときだけ読む
   push:
     branches: [main]
     paths:
-      - '.github/workflows/banban-ocr.yml'
-      - 'requirements-banban.txt'
-      - 'scripts/extract_banban.py'
-      - 'scripts/run_banban_ocr.py'
-      - 'tests/banban_ocr_ci.py'
       - 'source/banban_images/**'
       - 'ocr/banban_approved.json'
   workflow_dispatch:

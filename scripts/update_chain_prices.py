@@ -22,6 +22,7 @@ from pathlib import Path
 import requests
 from bs4 import BeautifulSoup
 
+import crawl_plan
 import update_chains
 
 DATA_FILE = Path(__file__).resolve().parents[1] / "source" / "chain_prices.json"
@@ -31,8 +32,6 @@ DELAY = 1.0 # スレッドごとの間隔
 PARALLEL = 4 # 利用者の要望で同時に取得する
 THROTTLED_CODES = (429, 503) # 公式サイトに制限されたら、残りの店は取りに行かない
 ATTEMPTS = 2
-# これより新しい店は取り直さない。中断したときは続きから進められる
-RECHECK_SECONDS = 20 * 3600
 # 表を読めた店が前回よりこの割合を下回ったら、サイト変更とみなして前回の値を残す
 MIN_RATIO = 0.8
 SAVE_EVERY = 20
@@ -152,8 +151,9 @@ def update(log=print) -> bool:
     now = int(time.time())
     done = 0
     ids = shop_ids()
-    due = [shop_id for shop_id in ids if now - shops.get(shop_id, {}).get("checked_at", 0) >= RECHECK_SECONDS
-           or shops.get(shop_id, {}).get("scope") != SCOPE]
+    # 店ごとに 3 日に 1 回、古い順に取る（crawl_plan.py）。表の範囲が古い店は毎回取る
+    due = crawl_plan.due(ids, shops.get, "source/chain_prices.json", now,
+                         force=lambda shop_id: shops.get(shop_id, {}).get("scope") != SCOPE)
     throttled = threading.Event()
 
     def fetch(shop_id: str) -> tuple[str, dict | None, str]:

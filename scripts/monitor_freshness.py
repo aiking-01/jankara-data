@@ -20,8 +20,12 @@ REQUIRED = ("chains", "jankara", "bigecho", "maneki", "kan")
 OPTIONAL = ("megabig", "joyjoy", "joysound", "cotedazur", "banban", "round1")
 KNOWN = frozenset(REQUIRED + OPTIONAL)
 # BanBan/ROUND1は目視承認後に更新されるため鮮度ではなく完全性だけ監視。
-REFRESHED = frozenset({"chains", "jankara", "bigecho", "maneki", "megabig",
+# 店の一覧は週 1 回しか取り直さず、古くなっても誤った金額にはならないので鮮度は見ない（完全性だけ確かめる）。
+# 料金のファイルは publish.py が店ごとに最後に確かめた日時まで checked_at を進める（毎回 3 分の 1 ずつ確かめる）
+REFRESHED = frozenset({"jankara", "bigecho", "maneki", "megabig",
                       "joyjoy", "joysound", "cotedazur"})
+# 料金のファイルは、期間限定の料金や長く確かめられない店を外して 0 店になることがある
+MAY_BE_EMPTY = frozenset(KNOWN - {"chains", "jankara"})
 
 
 MAX_XZ_BYTES = 16 * 1024 * 1024
@@ -74,7 +78,7 @@ def inspect(dist: Path, now: int, max_age_hours: float = 72) -> list[str]:
             entry.get("sha256"), entry.get("size"), entry.get("count"), entry.get("checked_at"))
         if not isinstance(sha, str) or len(sha) != 64 or any(c not in "0123456789abcdef" for c in sha):
             issues.append(f"{name}: sha256が不正")
-        if type(size) is not int or size <= 0 or type(count) is not int or count <= 0:
+        if type(size) is not int or size <= 0 or type(count) is not int or count < (0 if name in MAY_BE_EMPTY else 1):
             issues.append(f"{name}: サイズ・店舗数が不正")
         if type(checked_at) is not int or checked_at <= 0 or checked_at > now + 3600:
             issues.append(f"{name}: checked_atが不正または未来")

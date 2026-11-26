@@ -1,17 +1,11 @@
 name: Refresh shop data
 
+# コードを変えても巡回はしない（公式サイトへの負荷とプロキシの通信を毎回使わない）。テストは data-safety.yml が走らせ、変更は翌朝の定期実行で使われる
 on:
   workflow_dispatch:
   schedule:
     # Daily 04:10 JST (previous day 19:10 UTC)
     - cron: '10 19 * * *'
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/refresh.yml'
-      - 'scripts/**'
-      - 'tests/**'
-      - 'requirements.txt'
 
 permissions:
   contents: write
@@ -61,7 +55,13 @@ jobs:
           HTTP_PROXY: ${{ env.CRAWL_PROXY }}
           HTTPS_PROXY: ${{ env.CRAWL_PROXY }}
         continue-on-error: true
-        run: python scripts/update.py chains
+        # 店の一覧は週 1 回（日曜、UTC）と手で動かしたときだけ取り直す。公式サイトへのリクエストを抑えるため
+        run: |
+          if [ "$(date -u +%u)" = 7 ] || [ "${{ github.event_name }}" = workflow_dispatch ]; then
+            python scripts/update.py chains
+          else
+            echo "店の一覧は日曜だけ取り直します"
+          fi
 
       - name: Update MegaBig shops and prices
         id: megabig

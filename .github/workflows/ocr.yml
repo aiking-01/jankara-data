@@ -2,16 +2,12 @@ name: Read price images
 
 # 文字で読めない料金表（カラオケ館の画像、まねきねこの一部の PDF）を OCR で読む。
 # 巡回（refresh.yml、04:10）の後に動き、変わった画像だけを読む。CPU で 1 回約 4〜5 分かかるので、並列のジョブに分ける。
+# コードを変えても読み取りはしない（1 回数時間かかる）。テストは data-safety.yml、変更は翌朝の定期実行で使われる
 on:
   workflow_dispatch:
   schedule:
-    # Daily 07:10 JST (previous day 22:10 UTC)
-    - cron: '10 22 * * *'
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/ocr.yml'
-      - 'ocr/**'
+    # 3 日に 1 回 07:10 JST（前日 22:10 UTC）。料金画像はめったに変わらないので、公式サイトへのリクエストを抑える
+    - cron: '10 22 */3 * *'
 
 permissions:
   contents: write

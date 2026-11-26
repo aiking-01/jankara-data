@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import publish  # noqa: E402
 import seen  # noqa: E402
 import validate_data as v  # noqa: E402
+import crawl_plan  # noqa: E402
 
 DAY = 86400
 
@@ -163,6 +164,52 @@ class RateLimitTests(unittest.TestCase):
         with mock.patch.object(update_prices, "rate_limit_waited", update_prices.RATE_LIMIT_BUDGET),                 mock.patch.object(update_prices.time, "sleep"):
             with self.assertRaises(update_prices.RateLimited):
                 update_prices.fetch(session, 4, None)
+
+
+class CrawlPlanTests(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch.dict("os.environ", {}, clear=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        import os
+        os.environ.pop("CRAWL_ALL", None)
+
+    def plan(self, last, **kwargs):
+        now = 100 * DAY
+        state = {"files": {"source/x.json": {key: now - age for key, age in last.items()}}}
+        return crawl_plan.due(list(last), lambda key: {}, "source/x.json", now, state=state, **kwargs)
+
+    def test_a_third_of_the_shops_oldest_first(self):
+        last = {f"s{i}": (i + 1) * DAY for i in range(6)}  # s5 が最も古い
+        self.assertEqual(self.plan(last), ["s5", "s4"])
+
+    def test_shops_checked_within_20_hours_are_skipped(self):
+        self.assertEqual(self.plan({"a": 3600, "b": 3600, "c": 3600}), [])
+
+    def test_late_shops_are_fetched_beyond_the_quota(self):
+        last = {f"s{i}": 8 * DAY for i in range(6)}
+        self.assertEqual(len(self.plan(last)), 6)
+
+    def test_new_and_forced_shops_are_always_fetched(self):
+        now = 100 * DAY
+        state = {"files": {"source/x.json": {"a": now - DAY, "b": now - DAY, "c": now - DAY}}}
+        due = crawl_plan.due(["a", "b", "c", "new"], lambda key: {}, "source/x.json", now, state=state,
+                             force=lambda key: key == "b")
+        self.assertEqual(due[:2], ["b", "new"])
+
+    def test_crawl_all_fetches_every_shop(self):
+        import os
+        os.environ["CRAWL_ALL"] = "1"
+        self.assertEqual(len(self.plan({f"s{i}": 2 * DAY for i in range(6)})), 6)
+
+    def test_jankara_reads_every_number_only_on_sunday(self):
+        import update_prices
+        previous = {4: {"checked_at": 1}, 5: {"checked_at": 1, "closed": True}}
+        sunday = 1793491200  # 2026-11-01 00:00 UTC は日曜
+        monday = sunday + DAY
+        self.assertIsNone(update_prices.numbers_today(previous, sunday))
+        with mock.patch.object(crawl_plan.seen, "load", return_value={"files": {}}):
+            self.assertEqual(update_prices.numbers_today(previous, monday), [4])
 
 
 if __name__ == "__main__":

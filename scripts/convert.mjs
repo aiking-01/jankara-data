@@ -8,6 +8,7 @@ import { convertMegabig } from './web/megabig.js';
 import { convertKanOcr } from './web/ocr.js';
 import { convertCotedazurShops } from './web/cotedazur.js';
 import { convertJoysound } from './web/joysound.js';
+import { implausiblePrice } from './plausible.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const FIELDS = ['regular', 'solo', 'week', 'flat', 'minStay', 'alerts', 'source_rates'];
@@ -23,6 +24,7 @@ const TARGETS = {
 function isEmpty(value) {
   return value === undefined || value === null || (Array.isArray(value) && !value.length);
 }
+
 
 mkdirSync(join(ROOT, 'build'), { recursive: true });
 // コート・ダジュールは公式料金JSONを保持し、engine.js 用の通常料金とヒトカラ料金も作る。
@@ -40,6 +42,13 @@ for (const { reason } of coteFailures) {
 for (const [reason, count] of Object.entries(coteReasons)) {
   console.warn(`::warning::cotedazur: ${count} shops not converted: ${reason}`);
 }
+for (const [id, shop] of Object.entries(coteShops)) {
+  const odd = implausiblePrice(shop);
+  if (odd) {
+    console.warn(`::warning::cotedazur/${id}: 金額が不自然なので配りません (${odd})`);
+    delete coteShops[id];
+  }
+}
 writeFileSync(join(ROOT, 'build', 'cotedazur.json'), JSON.stringify({ updated_at: coteSource.updated_at, shops: coteShops }));
 console.log(`cotedazur: ${accepted}/${original} shops (${coteFailures.length} unsupported)`);
 
@@ -51,6 +60,11 @@ for (const [name, [file, convert]] of Object.entries(TARGETS)) {
     const converted = convert(shop);
     if (converted.reason !== 'other-chain') total += 1;
     if (converted.reason) continue;
+    const odd = implausiblePrice(converted);
+    if (odd) {
+      console.warn(`::warning::${name}/${id}: 金額が不自然なので配りません (${odd})`);
+      continue;
+    }
     shops[id] = { checked_at: shop.checked_at };
     for (const field of FIELDS) if (!isEmpty(converted[field])) shops[id][field] = converted[field];
   }

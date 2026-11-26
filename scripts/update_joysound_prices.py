@@ -14,6 +14,8 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import requests
+
+import crawl_plan
 from bs4 import BeautifulSoup
 
 import update
@@ -26,7 +28,6 @@ DELAY = 0.5
 PARALLEL = 4
 ATTEMPTS = 2
 THROTTLED_CODES = (429, 503)
-RECHECK_SECONDS = 20 * 3600
 MIN_SHOP_RATIO = 0.8
 SCOPE = "standard-rates-v1"
 PRICE_PATTERN = re.compile(r"([\d,]+)\s*円")
@@ -236,9 +237,10 @@ def update(log=print) -> bool:
     previous = old_doc.get("shops", {})
     now = int(time.time())
     selected = {key: previous[key] for key in listed if key in previous}
-    due = [key for key in listed if now - selected.get(key, {}).get("checked_at", 0) >= RECHECK_SECONDS
-           or selected.get(key, {}).get("scope") != SCOPE
-           or selected.get(key, {}).get("page") != listed[key]]
+    # 店ごとに 3 日に 1 回、古い順に取る（crawl_plan.py）。表の範囲か URL が変わった店は毎回取る
+    due = crawl_plan.due(list(listed), selected.get, "source/joysound_prices.json", now,
+                         force=lambda key: selected.get(key, {}).get("scope") != SCOPE
+                         or selected.get(key, {}).get("page") != listed[key])
     pacer = Pacer(DELAY)
     stopped = threading.Event()
     errors = []

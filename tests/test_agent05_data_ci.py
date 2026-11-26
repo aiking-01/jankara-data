@@ -46,10 +46,17 @@ class ManifestMonitorTests(unittest.TestCase):
     def test_refresh_staleness_is_detected(self):
         path = self.path / "manifest.json"
         data = json.loads(path.read_text())
-        data["files"]["chains"]["checked_at"] = NOW - 73 * 3600
+        data["files"]["bigecho"]["checked_at"] = NOW - 73 * 3600
         path.write_text(json.dumps(data))
         issues = monitor.inspect(self.path, NOW)
-        self.assertTrue(any("chains" in x and "最終正常確認" in x for x in issues), issues)
+        self.assertTrue(any("bigecho" in x and "最終正常確認" in x for x in issues), issues)
+
+    def test_shop_list_is_refreshed_weekly_so_its_age_is_not_reported(self):
+        path = self.path / "manifest.json"
+        data = json.loads(path.read_text())
+        data["files"]["chains"]["checked_at"] = NOW - 7 * 86400
+        path.write_text(json.dumps(data))
+        self.assertEqual(monitor.inspect(self.path, NOW), [])
 
     def test_ocr_without_new_images_is_not_reported_stale(self):
         path = self.path / "manifest.json"

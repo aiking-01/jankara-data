@@ -23,6 +23,8 @@ from pathlib import Path
 
 import requests
 
+import crawl_plan
+
 import update_chains
 
 try:
@@ -36,7 +38,6 @@ SCHEMA_VERSION = 1
 DELAY = 1.0
 THROTTLED_CODES = (403, 429, 503)
 ATTEMPTS = 2
-RECHECK_SECONDS = 20 * 3600
 MIN_RATIO = 0.8
 SAVE_EVERY = 20
 CHUNK = 4096
@@ -206,7 +207,8 @@ def update(log=print) -> bool:
     session.headers["User-Agent"] = USER_AGENT
     pages = shop_pages()
     now = int(time.time())
-    due = [shop_id for shop_id in pages if now - shops.get(shop_id, {}).get("checked_at", 0) >= RECHECK_SECONDS]
+    # 店ごとに 3 日に 1 回、古い順に取る（crawl_plan.py）
+    due = crawl_plan.due(list(pages), shops.get, "source/maneki_prices.json", now)
     failed = 0
     total = 0
     for number, shop_id in enumerate(due, 1):

@@ -22,6 +22,8 @@ import time
 from pathlib import Path
 
 import requests
+
+import crawl_plan
 from bs4 import BeautifulSoup
 
 BASE_URL = "https://jankara.ne.jp/shop/{}/"
@@ -364,10 +366,25 @@ def save(shops: list[dict], updated_at: int) -> None:
     os.replace(temp, DATA_DIR / "prices.csv")
 
 
+# 番号を 1 から順に全部読むのは週 1 回（日曜、UTC）。新しい店と閉店はこの日に見つける
+FULL_SWEEP_WEEKDAY = 6
+
+
+def numbers_today(previous: dict[int, dict], now: int) -> list[int] | None:
+    """今回読む店の番号。番号を順に全部読む日は None。
+
+    ほかの日は、営業中の既知の店を 3 日に 1 回、古い順に読む（crawl_plan.py）。公式サイトへの
+    リクエストを抑えるためで、料金はめったに変わらない。"""
+    if not previous or os.environ.get("CRAWL_ALL") == "1" or time.gmtime(now).tm_wday == FULL_SWEEP_WEEKDAY:
+        return None
+    known = [number for number, shop in previous.items() if not shop.get("closed")]
+    return crawl_plan.due(known, previous.get, "source/prices.json", now)
+
+
 def sweep(start: int = 1, end: int = 2000, stop_after: int = 60, delay: float = 1.0,
           cache_dir: Path | None = None, log=print,
-          on_progress=None) -> tuple[dict[int, dict], list[int], list[int]]:
-    """番号を順に取得し、(店舗, 取得失敗の番号, 未使用の番号) を返す。"""
+          on_progress=None, numbers: list[int] | None = None) -> tuple[dict[int, dict], list[int], list[int]]:
+    """番号を順に取得し、(店舗, 取得失敗の番号, 未使用の番号) を返す。numbers を渡すとその番号だけを読む。"""
     session = requests.Session()
     session.headers["User-Agent"] = USER_AGENT
     previous = load_previous()
@@ -378,7 +395,7 @@ def sweep(start: int = 1, end: int = 2000, stop_after: int = 60, delay: float = 
     failed: list[int] = []
     missing: list[int] = []
     misses = 0
-    for number in range(start, end + 1):
+    for number in (numbers if numbers is not None else range(start, end + 1)):
         if on_progress:
             on_progress(number)
         try:
@@ -393,7 +410,7 @@ def sweep(start: int = 1, end: int = 2000, stop_after: int = 60, delay: float = 
                 missing.append(number)
                 misses += 1
                 # 既知の番号より先でだけ打ち切る（途中に大きな欠番があっても止まらない）
-                if misses >= stop_after and number > known_max:
+                if numbers is None and misses >= stop_after and number > known_max:
                     log(f"{stop_after} 件連続で未使用のため {number} で終了")
                     break
             else:
@@ -462,8 +479,11 @@ def main() -> int:
         args.cache_dir.mkdir(parents=True, exist_ok=True)
 
     try:
+        numbers = None if args.cache_dir else numbers_today(load_previous(), now_epoch())
+        if numbers is not None:
+            print(f"今回は {len(numbers)} 店を読みます（番号を順に全部読むのは日曜）", flush=True)
         shops, failed, missing = sweep(args.start, args.end, args.stop_after, args.delay,
-                                       args.cache_dir, lambda line: print(line, flush=True))
+                                       args.cache_dir, lambda line: print(line, flush=True), numbers=numbers)
     except RateLimited:
         print("サイトから 429 が返ったため中断しました。保存していません。", file=sys.stderr)
         return 1

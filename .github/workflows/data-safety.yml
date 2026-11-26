@@ -4,6 +4,17 @@ on:
   pull_request:
     # JSON SHAのPRは#9へ積み上げるため、依存ブランチでも回帰検証する。
     branches: [main, fix/audit05-data-freshness-20261106]
+  # コードを変えたときはテストと検査だけを走らせる（1〜2 分、公式サイトには接続しない）。
+  # 巡回と読み取りは refresh.yml と ocr.yml の毎日の定期実行だけで行う
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/**'
+      - 'scripts/**'
+      - 'ocr/*.py'
+      - 'ocr/*.mjs'
+      - 'tests/**'
+      - 'requirements*.txt'
   workflow_dispatch:
 
 permissions:

@@ -3,13 +3,9 @@ name: Proxy probe
 # プロキシにつながるかだけを確かめる。巡回もデータの書き込みもしない。
 # ログを開かなくても、API で読める手順ごとの成否でどこまで届いたかが分かるように、確認を手順に分け、
 # 前の確認が失敗しても後の確認を続ける。
+# プロキシを確かめたいときに Actions の画面から手で動かす
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/proxy-probe.yml'
-      - 'scripts/proxy_env.py'
 
 permissions:
   contents: read
