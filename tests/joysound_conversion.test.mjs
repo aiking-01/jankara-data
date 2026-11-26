@@ -81,13 +81,17 @@ test('状態のない旧形式・料金なしの状態の記録は金額にし�
   assert.ok(convertJoysoundShop(kanayama, { today: '2027-01-20' }).regular.length);
 });
 
-test('期間告知は変換する日から 21 日先までと重なれば金額にしない', () => {
+test('期間告知はまだ終わっていなければ、どれだけ先の期間でも金額にしない', () => {
   const notice = (from, until) => ({ ...kanayama, notices: [{ from, until, text: '年末年始特別料金' }] });
-  // 12/29 から: 12/8 の 21 日先（12/29 の終わりまで）と重なる。12/7 では重ならない
+  // アプリの日付の選択に上限はないので、12/29 からの告知は 11/26 にも 12/7 にも出さない
   const yearEnd = notice(jst('2026-12-29T00:00'), jst('2027-01-04T06:00'));
-  assert.equal(convertJoysoundShop(yearEnd, { today: '2026-12-08' }).reason, 'season');
-  assert.equal(convertJoysoundShop(yearEnd, { today: '2026-12-07' }).reason, undefined);
-  assert.equal(convertJoysoundShop(yearEnd, { today: '2027-01-03' }).reason, 'season');
+  for (const today of ['2026-11-26', '2026-12-07', '2026-12-08', '2027-01-03']) {
+    assert.equal(convertJoysoundShop(yearEnd, { today }).reason, 'season', today);
+  }
+  // 3/25 の時点で 4/25〜5/7 の告知がある店は、4/29 を選ぶ人がいるので出さない
+  const golden = notice(jst('2027-04-25T06:00'), jst('2027-05-07T06:00'));
+  assert.equal(convertJoysoundShop(golden, { today: '2027-03-25' }).reason, 'season');
+  assert.equal(convertJoysoundShop(golden, { today: '2027-05-08' }).reason, undefined);
   // 終わりの日の朝 6 時までは、その日を選ぶ人がいるので出さない。翌日から出す
   assert.equal(convertJoysoundShop(yearEnd, { today: '2027-01-04' }).reason, 'season');
   assert.equal(convertJoysoundShop(yearEnd, { today: '2027-01-05' }).reason, undefined);
@@ -149,6 +153,30 @@ test('例外の付いた平日・読めない区分・重なる区分の表は�
     section('昼', '平日', [row('30分 12:00〜18:00', 300)]),
     section('昼', '週末 (土・日)', [row('30分 12:00〜18:00', 400)]),
   ]).reason, 'no-readable-rates');
+});
+
+test('夜の表の 0:00〜翌8:00 のように日付をまたいだ後に始まるプランは出さない', () => {
+  // 伊東店の形。夜の表の「金土祝前」はその夜の始まりの日の区分なので、0 時のある日の曜日で選ぶと 1 日ずれる
+  // （土曜の夜にあたる日曜 1:00 に平日の 2250 円、木曜の夜にあたる金曜 1:00 に週末の 2800 円が出ていた）
+  const row = (label, price) => ({ label, prices: { 一般: price }, drinks: { 一般: '' } });
+  const converted = convertJoysound([
+    { period: '夜', day: '平日', rows: [row('30分 18:00〜翌5:00', 650), row('ロング フリータイム 18:00〜翌8:00', 2250),
+      row('深夜 フリータイム 0:00〜翌8:00', 2250)] },
+    { period: '夜', day: '週末 (金・土 ・祝前)', rows: [row('30分 18:00〜翌5:00', 670), row('ロング フリータイム 18:00〜翌8:00', 2800),
+      row('深夜 フリータイム 0:00〜翌8:00', 2800)] },
+  ]);
+  const plans = converted.regular.flatMap((table) => table.plans);
+  assert.deepEqual(plans.map((plan) => `${plan.name} ${plan.hours}`), ['30分 18:00～5:00', 'ロングフリータイム 18:00～8:00']);
+  assert.ok(plans.every((plan) => !/^0:/.test(plan.hours)));
+  // 30 分の行も同じ。昼の表の朝からの時間帯は今までどおり読む
+  assert.equal(convertJoysound([
+    { period: '夜', day: '平日', rows: [row('30分 0:00〜翌5:00', 650)] },
+    { period: '夜', day: '週末 (金・土・祝前)', rows: [row('30分 0:00〜翌5:00', 670)] },
+  ]).reason, 'no-readable-rates');
+  assert.deepEqual(convertJoysound([
+    { period: '昼', day: '平日', rows: [row('30分 8:00〜18:00', 300)] },
+    { period: '昼', day: '週末 (土・日・祝)', rows: [row('30分 8:00〜18:00', 400)] },
+  ]).regular[0].plans.map((plan) => plan.hours), ['8:00～18:00']);
 });
 
 test('受付の条件は最終受付として読み、読めなければそのプランを出さない', () => {

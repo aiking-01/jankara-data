@@ -2,9 +2,10 @@
 """公式 JOYSOUND 店舗ページから標準料金表を取得する。
 
 店ごとの記録は status で状態を持つ。金額に変換するのは status が priced の店だけ。
-- priced: 料金表を読めた。年末年始などの期間告知が先にあれば notices に残し、変換する日に判定する
+- priced: 料金表を読めて、まだ終わっていない期間告知がない
 - contact: 「料金は店舗にお問い合わせください」だけで、料金表がない
-- season: 年末年始・特別料金などの告知が、今日から 21 日先までと重なる（表と実際の料金が違い得る）
+- season: 年末年始・特別料金などの告知が、まだ終わっていない（表と実際の料金が違い得る）。
+  アプリは先の日付をいくらでも選べるので、期間がどれだけ先でも出さない
 - unparsed: ページは取れたが、料金表を読めない（表の形が変わったなど）
 - unverified: 旧形式の記録で、取り直せなかった（期間告知や問い合わせを確かめていない）
 通信の失敗（タイムアウト、接続エラー、5xx、429、公式の店舗ページではない応答）のときだけ前回の記録を残す。
@@ -39,7 +40,6 @@ THROTTLED_CODES = (429, 503)
 STOP_AFTER = 5  # 続けてこの数の店で通信に失敗したら、残りの店は今回は取らない
 SCOPE = "standard-rates-v2"  # v2: status と期間告知（notices）を持つ
 STATUSES = ("priced", "contact", "season", "unparsed", "unverified")
-LOOKAHEAD_DAYS = 21  # アプリは配信データを最長 21 日使い、利用者は先の日付も選べる
 JST = timezone(timedelta(hours=9))
 PRICE_PATTERN = re.compile(r"([\d,]+)\s*円")
 NO_PRICE = {"", "-", "−", "ー", "―", "—"}
@@ -51,7 +51,8 @@ SEASON_WORDS = ("特別料金", "年末年始", "期間限定", "期間中", "�
 _DATE = r"(?:(\d{4})[年/])?(\d{1,2})[月/](\d{1,2})日?(?:\([^)]{1,3}\))?"
 _END = r"(?:(\d{4})[年/])?(?:(\d{1,2})[月/])?(\d{1,2})日?(?:\([^)]{1,3}\))?"
 DATE_RANGE = re.compile(_DATE + r"(?:[〜～~\-－]|から)" + _END)
-ONE_DATE = re.compile(_DATE + r"(まで|迄|から|より|以降)?")
+# 終わりの日付のない「12/27〜」も始まりだけの告知として読む（その 1 日だけの告知にしない）
+ONE_DATE = re.compile(_DATE + r"(まで|迄|から|より|以降|[〜～~\-－])?")
 
 
 class Throttled(RuntimeError):
@@ -140,18 +141,17 @@ def official_simple_hours(soup: BeautifulSoup) -> str:
 
 # ---- 期間告知 ----
 
-def window(now: int) -> tuple[int, int]:
-    """今日（JST）の 0 時から、21 日先の日の終わりまで。"""
+def day_start(now: int) -> int:
+    """今日（JST）の 0 時。"""
     today = datetime.fromtimestamp(now, JST).date()
-    start = datetime(today.year, today.month, today.day, tzinfo=JST)
-    return int(start.timestamp()), int((start + timedelta(days=LOOKAHEAD_DAYS + 1)).timestamp())
+    return int(datetime(today.year, today.month, today.day, tzinfo=JST).timestamp())
 
 
 def overlaps(notice: dict, now: int) -> bool:
-    """告知の期間が今日から 21 日先までと重なるか。終わりが読めない告知は重なるとみなす。"""
-    start, end = window(now)
-    begins, until = notice.get("from"), notice.get("until")
-    return (begins is None or begins < end) and (until is None or until > start)
+    """告知がまだ終わっていないか。終わりが読めない告知は続いているとみなす。
+    アプリは先の日付をいくらでも選べるので、始まりがどれだけ先でも、終わるまでは表の金額を出さない。"""
+    until = notice.get("until")
+    return until is None or until > day_start(now)
 
 
 def _epoch(day: date, *, end: bool = False) -> int:
@@ -161,23 +161,31 @@ def _epoch(day: date, *, end: bool = False) -> int:
 
 
 def _resolve(today: date, year, month, day, end_month, end_day, end_year) -> tuple[date, date] | None:
-    """年のない期間は、終わりが今日以降になる最も早い年に置く。12/27〜1/5 のように年をまたぐ期間も扱う。"""
+    """期間を年に置く。年のない期間は、去年・今年・来年のうち今日に最も近い回にする（同じ近さなら先の回）。
+    12/27〜1/5 のように年をまたぐ期間も扱う。
+
+    「12月27日より」のように始まりだけの日付は、12/28 に来年の 12/27 と読むと、始まった翌日に告知が消えて
+    表の金額が出てしまう。近い回に置けば、始まった後は「もう始まっている」と読める。
+    「1月5日まで」のように終わりだけの日付も、過ぎた後は終わった告知と読める（来年の 1/5 まで続くとしない）。
+    半年より前に告知が載っていても、まだ先の回とは読めない（過ぎた回として扱う）。"""
     month, day = int(month), int(day)
     end_month = int(end_month) if end_month else month
     end_day = int(end_day)
-    years = [int(year)] if year else [today.year - 1, today.year, today.year + 1]
-    for first in years:
+    best = None
+    for first in [int(year)] if year else [today.year - 1, today.year, today.year + 1]:
         try:
             begins = date(first, month, day)
             last_year = int(end_year) if end_year else first + (1 if (end_month, end_day) < (month, day) else 0)
             until = date(last_year, end_month, end_day)
-        except ValueError:  # 2/30 のような日付。うるう年でない年の 2/29 は次の年を試す
+        except ValueError:  # 2/30 のような日付。うるう年でない年の 2/29 はほかの年だけを比べる
             continue
         if until < begins:
             return None
-        if year or until >= today:
-            return begins, until
-    return None
+        gap = (begins - today).days if begins > today else (today - until).days if until < today else 0
+        rank = (gap, begins <= today)  # 同じ近さなら先の回（出さない側）
+        if best is None or rank < best[0]:
+            best = (rank, begins, until)
+    return (best[1], best[2]) if best else None
 
 
 def text_notices(text: str, today: date) -> list[dict]:
@@ -199,7 +207,7 @@ def text_notices(text: str, today: date) -> list[dict]:
                 found.append((None, None))
             elif match[4] in ("まで", "迄"):
                 found.append((None, _epoch(span[1], end=True)))
-            elif match[4]:
+            elif match[4]:  # より・から・以降・「12/27〜」: 終わりが分からない
                 found.append((_epoch(span[0]), None))
             else:
                 found.append((_epoch(span[0]), _epoch(span[1], end=True)))
@@ -230,8 +238,7 @@ def season_notices(soup: BeautifulSoup, blocks: list, now: int) -> list[dict]:
     today = datetime.fromtimestamp(now, JST).date()
     for _, contents, _ in blocks:
         notices.extend(text_notices(_block_text(contents), today))
-    start, _ = window(now)
-    return [notice for notice in notices if notice["until"] is None or notice["until"] > start]
+    return [notice for notice in notices if overlaps(notice, now)]
 
 
 def _block_text(contents) -> str:
@@ -309,12 +316,12 @@ def parse_page(html: str, page: str, now: int | None = None) -> dict:
             raise ValueError("問い合わせの欄の文言が想定と違います")
         return {**base, "status": "contact", "sections": []}
 
-    # 年末年始などの告知が今日から 21 日先までと重なれば、表と実際の料金が違い得るので出さない
+    # 年末年始などの告知がまだ終わっていなければ、表と実際の料金が違い得るので出さない。
+    # アプリは先の日付をいくらでも選べるので、期間がどれだけ先でも出さない
     notices = season_notices(soup, blocks, now)
-    current = [notice for notice in notices if overlaps(notice, now)]
-    if current:
-        untils = [notice["until"] for notice in current]
-        return {**base, "status": "season", "sections": [], "notices": current,
+    if notices:
+        untils = [notice["until"] for notice in notices]
+        return {**base, "status": "season", "sections": [], "notices": notices,
                 "season_until": None if None in untils else max(untils)}
 
     sections = []

@@ -3,8 +3,6 @@ import { parseDays } from './bigecho.js';
 // JOYSOUND 直営店の公式料金表（update_joysound_prices.py の記録）を engine.js の regular の形へ変換する。
 // 誤った金額を出さないことを最優先にする。読めない店は「料金表を見る」になるだけで済む。
 export const SCOPE = 'standard-rates-v2';
-// アプリは配信データを最長 21 日使い、利用者は先の日付も選べるので、今日から 21 日先までの告知を見る
-export const LOOKAHEAD_DAYS = 21;
 const CUSTOMERS = ['学生会員', '学生', '会員', 'シニア', '一般'];
 const DAY_ORDER = ['月', '火', '水', '木', '金', '土', '日', '祝', '祝前'];
 const norm = (value) => (value ?? '').normalize('NFKC').replace(/\s+/g, '');
@@ -73,7 +71,11 @@ function planOf(label, period, openingHours = '') {
   // 24時間営業や曜日ごとに閉店が変わる場合は推測せずsource_ratesへ残す。
   const exact = /^(?:\d{1,2}:\d{2})[〜～~-](?:翌)?(\d{1,2}:\d{2})$/.exec(norm(openingHours));
   const close = exact?.[1] ?? null;
+  // 夜の表の「深夜 フリータイム 0:00〜翌8:00」のように日付をまたいだ後に始まる時間帯は読まない。
+  // 夜の表の曜日区分（金土祝前など）はその夜の始まりの日で決まるが、engine.js は 0 時のある日の曜日で行を選ぶので、
+  // 同じ夜の表のほかのプランと 1 日ずれた曜日の金額が出る。祝・祝前を 1 日ずらす方法も決められない
   const ranges = [...text.matchAll(/(\d{1,2}:\d{2})[〜～~-](?:翌)?(\d{1,2}:\d{2}|LAST)/gi)];
+  if (period === '夜' && ranges.some((range) => Number(range[1].split(':')[0]) < 12)) return [];
   const endAt = (range) => range[2].toUpperCase() === 'LAST' ? close : range[2];
   // 「受付9:00〜10:59」のような受付の時間帯は、プランの時間帯と見分けられないので読まない
   if (/受付(?:時間)?[:：]?[0-2]?\d:\d{2}[〜~-]/.test(text)) return [];
@@ -233,19 +235,15 @@ export function jstDate(ms) {
   return new Date(ms + 9 * 3600 * 1000).toISOString().slice(0, 10);
 }
 
-// 告知の期間が today（JST）から 21 日先までと重なるか。始まり・終わりが読めない告知は重なるとみなす
+// today（JST）にまだ終わっていない告知があるか。終わりが読めない告知は続いているとみなす。
+// アプリは先の日付をいくらでも選べるので、始まりがどれだけ先でも、終わるまでは表の金額を出さない
 export function seasonOverlaps(notices, today) {
   const [year, month, day] = today.split('-').map(Number);
   const start = Date.UTC(year, month - 1, day) / 1000 - 9 * 3600;
-  const end = start + (LOOKAHEAD_DAYS + 1) * 86400;
-  return notices.some((notice) => {
-    const from = Number.isInteger(notice?.from) ? notice.from : null;
-    const until = Number.isInteger(notice?.until) ? notice.until : null;
-    return (from === null || from < end) && (until === null || until > start);
-  });
+  return notices.some((notice) => !Number.isInteger(notice?.until) || notice.until > start);
 }
 
-// 店の記録 1 件を変換する。料金表を読めて（status が priced）、期間告知が今日から 21 日先までと重ならない店だけ。
+// 店の記録 1 件を変換する。料金表を読めて（status が priced）、まだ終わっていない期間告知がない店だけ。
 // 状態のない旧形式の記録（期間告知や問い合わせ、飲み物の注記を確かめていない表）は金額にしない
 export function convertJoysoundShop(shop, { today } = {}) {
   if (!shop || shop.scope !== SCOPE) return { reason: 'old-record' };

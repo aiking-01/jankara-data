@@ -65,14 +65,19 @@ class ParsePageTests(unittest.TestCase):
         self.assertEqual(record["sections"], [])
         self.assertEqual(record["season_until"], at("2027-01-12T06:00"))
 
-    def test_season_starting_within_21_days_is_already_hidden(self):
-        # 告知は 11/21 から。11/1 の 21 日先（11/22 まで）と重なる
-        self.assertEqual(u.parse_page(KANAYAMA, page("kanayama"), at("2026-11-01T12:00"))["status"], "season")
-        record = u.parse_page(KANAYAMA, page("kanayama"), at("2026-10-01T12:00"))
-        self.assertEqual(record["status"], "priced")
-        # まだ先の告知は記録に残し、変換する日に判定し直す
-        self.assertEqual([(n["from"], n["until"]) for n in record["notices"]],
-                         [(at("2026-11-21T06:00"), at("2027-01-12T06:00"))])
+    def test_season_far_ahead_is_already_hidden(self):
+        # アプリは先の日付をいくらでも選べるので、告知の期間がどれだけ先でも、終わるまでは表の金額を出さない
+        for day in ("2026-11-01T12:00", "2026-10-01T12:00"):
+            record = u.parse_page(KANAYAMA, page("kanayama"), at(day))
+            self.assertEqual(record["status"], "season", day)
+            self.assertEqual([(n["from"], n["until"]) for n in record["notices"]],
+                             [(at("2026-11-21T06:00"), at("2027-01-12T06:00"))])
+        # 3/25 に載った GW（4/25〜5/7）の告知: 4/29 を選ぶ人に通常の表の金額を出さない
+        golden = KANAYAMA.replace(SEASON_TAG, 'data-from="2027-04-25T06:00:00+09:00" data-until="2027-05-07T06:00:00+09:00"')
+        record = u.parse_page(golden, page("kanayama"), at("2027-03-25T04:10"))
+        self.assertEqual(record["status"], "season")
+        self.assertEqual(record["season_until"], at("2027-05-07T06:00"))
+        self.assertEqual(u.parse_page(golden, page("kanayama"), at("2027-05-08T12:00"))["status"], "priced")
 
     def test_table_comes_back_after_the_season(self):
         # 終わりの日（1/12 の朝 6 時まで）は今日の範囲に入るので、まだ出さない
@@ -95,9 +100,9 @@ class ParsePageTests(unittest.TestCase):
         record = u.parse_page(html, page("kanayama"), at("2026-12-10T12:00"))
         self.assertEqual(record["status"], "season")
         self.assertEqual(record["season_until"], at("2027-01-04T06:00"))
-        # 期間の 21 日より前は表を読み、告知は先の期間として残す
+        # 期間より 1 か月以上前でも、その日を選ぶ人がいるので出さない
         early = u.parse_page(html, page("kanayama"), at("2026-11-01T12:00"))
-        self.assertEqual(early["status"], "priced")
+        self.assertEqual(early["status"], "season")
         self.assertEqual(early["notices"][0]["from"], at("2026-12-29T00:00"))
 
     def test_period_across_the_new_year_gets_the_right_years(self):
@@ -106,10 +111,35 @@ class ParsePageTests(unittest.TestCase):
         self.assertEqual(record["status"], "season")
         self.assertEqual((record["notices"][0]["from"], record["notices"][0]["until"]),
                          (at("2026-12-27T00:00"), at("2027-01-06T06:00")))
-        # 期間が過ぎたら、次の年末の告知として残す
+        # 期間が過ぎたら、終わった告知として表を出す（年のない期間は、今日に最も近い回に置く）
         later = u.parse_page(html, page("kanayama"), at("2027-02-01T12:00"))
         self.assertEqual(later["status"], "priced")
-        self.assertEqual(later["notices"][0]["from"], at("2027-12-27T00:00"))
+        self.assertEqual(later["notices"], [])
+        # 載ったままなら、次の年末のほうが近くなった時点で、次の年末の告知として出さない
+        again = u.parse_page(html, page("kanayama"), at("2027-08-01T12:00"))
+        self.assertEqual(again["status"], "season")
+        self.assertEqual(again["notices"][0]["from"], at("2027-12-27T00:00"))
+
+    def test_notice_with_only_a_start_date_stays_after_it_starts(self):
+        # 「12月27日より」を始まった翌日に来年の 12/27 と読むと、特別料金の期間中に通常の表の金額が出てしまう
+        for note in ("※12月27日より年末年始特別料金となります。", "※12/27から年末年始特別料金となります。",
+                     "※12/27(日)〜年末年始特別料金となります。"):
+            html = with_note(without_season(KANAYAMA), note)
+            for day in ("2026-12-10T12:00", "2026-12-27T12:00", "2026-12-28T12:00", "2027-01-03T12:00", "2027-01-10T12:00"):
+                record = u.parse_page(html, page("kanayama"), at(day))
+                self.assertEqual(record["status"], "season", (note, day))
+                # 終わりが分からないので、期間明けを待って取り直すことはしない（3 日に 1 回の巡回で確かめる）
+                self.assertIsNone(record["season_until"], (note, day))
+                self.assertEqual(record["notices"][0]["from"], at("2026-12-27T00:00"), (note, day))
+
+    def test_notice_with_only_an_end_date_ends_on_that_date(self):
+        html = with_note(without_season(KANAYAMA), "※年末年始特別料金は1月5日まで実施しております。")
+        record = u.parse_page(html, page("kanayama"), at("2027-01-03T12:00"))
+        self.assertEqual(record["status"], "season")
+        self.assertEqual(record["season_until"], at("2027-01-06T06:00"))
+        # 過ぎた後に注記が残っていても、来年の 1/5 まで続く告知とは読まない
+        for day in ("2027-01-10T12:00", "2027-06-01T12:00"):
+            self.assertEqual(u.parse_page(html, page("kanayama"), at(day))["status"], "priced", day)
 
     def test_season_words_without_dates_hide_the_table(self):
         html = with_note(without_season(KANAYAMA), "※年末年始は特別料金となります。")
