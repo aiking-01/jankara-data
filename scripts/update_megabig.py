@@ -9,7 +9,7 @@
   前回の金額は残さない。記録は残すので、店数の減少として検査に止められない。
 - 一覧から消えた店と閉店した店は料金の記録を消す（店の一覧 chains.json の行は残す。理由は MAX_REMOVED を参照）。
 - 料金のセルは数字（とカンマと円）だけを読む。「-」はその曜日は提供なしとして残す。読めないセルのある表は捨て、
-  skipped に残す（変換が警告に出す）。
+  備考と一緒に skipped に残す（変換はその店を出さず、警告に出す）。
 - #price の HTML コメントは読む前に取り除く（去年の告知がコメントで残っている）。表の外の文（notices）と
   #price のリンク（links）も残し、変換で期間料金の告知を判定する。
 - CRAWL_DEADLINE を過ぎたら残りの店は取らずに、そこまでの分を保存して終わる。
@@ -111,7 +111,8 @@ def cell_text(cell) -> str | None:
 
 
 def parse_sections(root) -> tuple[list[dict], list[dict]]:
-    """#price の .tbl-wrap を表にする。読めない表は捨てて (時間帯, 見出し, 理由) を返す。"""
+    """#price の .tbl-wrap を表にする。読めない表は捨てて (時間帯, 見出し, 備考, 理由) を返す。
+    捨てた表の備考も残す（期間料金や 1 人の料金の文が書いてあれば、変換で店ごと判定に使う）。"""
     sections, skipped = [], []
     for wrapper in root.select(".tbl-wrap"):
         table = wrapper.select_one("table.tbl")
@@ -120,9 +121,10 @@ def parse_sections(root) -> tuple[list[dict], list[dict]]:
         cells = head.select("th,td") if head else []
         time_text = clean(titlebar.get_text(" ", strip=True)) if titlebar else ""
         title = clean(cells[0].get_text("", strip=True)) if cells else ""
+        note = clean(" ".join(p.get_text(" ", strip=True) for p in table.select("tr.txtbox p"))) if table else ""
 
         def skip(reason: str) -> None:
-            skipped.append({"time": time_text, "title": title, "reason": reason})
+            skipped.append({"time": time_text, "title": title, "note": note, "reason": reason})
 
         if not table or not titlebar or len(cells) < 2:
             skip("shape")
@@ -143,7 +145,6 @@ def parse_sections(root) -> tuple[list[dict], list[dict]]:
         if reason or not rows:
             skip(reason or "no-rows")
             continue
-        note = clean(" ".join(p.get_text(" ", strip=True) for p in table.select("tr.txtbox p")))
         heading = next((clean(h.get_text(" ", strip=True)) for h in wrapper.find_all_previous("h3")
                         if clean(h.get_text(" ", strip=True))), "")
         sections.append({

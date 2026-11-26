@@ -532,6 +532,7 @@ def _megabig_raw(item, old, key, issues):
         return
     skipped = item.get("skipped", [])
     if not isinstance(skipped, list) or any(not isinstance(entry, dict) or not isinstance(entry.get("reason"), str)
+                                            or not isinstance(entry.get("note", ""), str)
                                             for entry in skipped):
         issues.append(f"{key}: 読めなかった表の記録が不正")
         skipped = []

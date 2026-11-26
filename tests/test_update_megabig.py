@@ -87,10 +87,21 @@ class ParseTests(unittest.TestCase):
         markup = page("shop_0907.html").replace('<span class="num">1,400</span>', '<span class="num">980円※2</span>', 1)
         _, record = parse("0907", markup)
         self.assertEqual(len(record["sections"]), 7)
-        self.assertEqual(record["skipped"], [{"time": "昼3時間パック OPEN〜19:00", "title": "3時間パック", "reason": "price-cell"}])
+        self.assertEqual(record["skipped"], [{
+            "time": "昼3時間パック OPEN〜19:00", "title": "3時間パック",
+            "note": "アルコール・ソフトドリンク飲み放題込み LINEで簡単会員登録（無料） 最終受付（16:00）",
+            "reason": "price-cell"}])
         for section in record["sections"]:
             for row in section["rows"]:
                 self.assertTrue(all(value.isdigit() or value == "-" for value in row[1:]), row)
+
+    def test_skipped_table_keeps_its_note(self):
+        # 捨てた表の備考に書かれた期間料金の告知も、変換から見えるように残す
+        markup = page("shop_0907.html").replace('<span class="num">1,400</span>', '<span class="num">1,400※</span>', 1)
+        markup = markup.replace("最終受付（16:00）</p>", "最終受付（16:00）</p><p>※12月29日(火)～1月3日(日)は年末年始料金となります</p>", 1)
+        _, record = parse("0907", markup)
+        self.assertEqual(len(record["skipped"]), 1)
+        self.assertIn("12月29日(火)～1月3日(日)は年末年始料金", record["skipped"][0]["note"])
 
     def test_amount_with_yen_and_comma_is_read(self):
         markup = page("shop_0907.html").replace('<span class="num">1,400</span>', '<span class="num">￥1,400円</span>', 1)
@@ -354,6 +365,16 @@ class ValidateTests(unittest.TestCase):
         del new["skipped"]
         v._megabig_raw(new, old, "mb-1389", issues)
         self.assertTrue(any("大量欠落" in issue for issue in issues))
+
+    def test_skipped_table_note_must_be_text(self):
+        record = self.record()
+        record["skipped"] = [{"time": "", "title": "3時間パック", "note": "最終受付（16:00）", "reason": "price-cell"}]
+        issues = []
+        v._megabig_raw(record, None, "mb-1389", issues)
+        self.assertEqual(issues, [])
+        record["skipped"][0]["note"] = ["最終受付（16:00）"]
+        v._megabig_raw(record, None, "mb-1389", issues)
+        self.assertTrue(any("読めなかった表の記録が不正" in issue for issue in issues))
 
 
 if __name__ == "__main__":
