@@ -23,6 +23,7 @@ python scripts/validate_data.py --stage sources --baseline HEAD --repair
 
 git add -- "$@"
 [ -f source/seen.json ] && git add -- source/seen.json
+[ -f source/quarantine.json ] && git add -- source/quarantine.json
 git diff --cached --quiet || git commit -q -m "$message"
 
 for attempt in $(seq 1 "$ATTEMPTS"); do
@@ -32,13 +33,12 @@ for attempt in $(seq 1 "$ATTEMPTS"); do
   node scripts/convert.mjs
   node --test tests/*.test.mjs
   # Validate against latest main; scripts and OCR runs share the same gate.
+  # 修復したときは、検査の中で変換し直してから検査をやり直すので、build はここで修復後の元データと一致している
   python scripts/validate_data.py --stage full --baseline origin/main --repair
-  # 修復で元データが変わったら、その元データを積んでから変換と検査をやり直す
+  # 修復で元データが変わったら、その元データを積む（外した店の記録 quarantine.json も）
   if [ -n "$(git status --porcelain -- chains.json source)" ]; then
     git add -- chains.json source
     git commit -q -m "data: leave out shops that failed the data check"
-    node scripts/convert.mjs
-    python scripts/validate_data.py --stage full --baseline origin/main
   fi
   # 検査を通った元データの店数で公開する。変換が読まなくなった店（期間限定の料金など）で減っても前回を残さない
   # Publish must succeed completely: never push partial/old manifest data.

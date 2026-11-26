@@ -15,17 +15,16 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-REQUIRED = ("chains", "jankara", "bigecho", "maneki", "kan")
-# 追加配信は任意。存在する場合には基本5種と同じ完全性検証を行う。
-OPTIONAL = ("megabig", "joyjoy", "joysound", "cotedazur", "banban", "round1")
+REQUIRED = ("chains", "jankara")
+# 料金のファイルは、配れる店がなくなると publish.py が manifest に載せない（期間限定の料金や、長く確かめられない店を外した結果）。
+# 載っているときは基本と同じ完全性検証を行う
+OPTIONAL = ("bigecho", "maneki", "kan", "megabig", "joyjoy", "joysound", "cotedazur", "banban", "round1")
 KNOWN = frozenset(REQUIRED + OPTIONAL)
 # BanBan/ROUND1は目視承認後に更新されるため鮮度ではなく完全性だけ監視。
 # 店の一覧は週 1 回しか取り直さず、古くなっても誤った金額にはならないので鮮度は見ない（完全性だけ確かめる）。
 # 料金のファイルは publish.py が店ごとに最後に確かめた日時まで checked_at を進める（毎回 3 分の 1 ずつ確かめる）
 REFRESHED = frozenset({"jankara", "bigecho", "maneki", "megabig",
                       "joyjoy", "joysound", "cotedazur"})
-# 料金のファイルは、期間限定の料金や長く確かめられない店を外して 0 店になることがある
-MAY_BE_EMPTY = frozenset(KNOWN - {"chains", "jankara"})
 
 
 MAX_XZ_BYTES = 16 * 1024 * 1024
@@ -78,8 +77,8 @@ def inspect(dist: Path, now: int, max_age_hours: float = 72) -> list[str]:
             entry.get("sha256"), entry.get("size"), entry.get("count"), entry.get("checked_at"))
         if not isinstance(sha, str) or len(sha) != 64 or any(c not in "0123456789abcdef" for c in sha):
             issues.append(f"{name}: sha256が不正")
-        if type(size) is not int or size <= 0 or type(count) is not int or count < (0 if name in MAY_BE_EMPTY else 1):
-            issues.append(f"{name}: サイズ・店舗数が不正")
+        if type(size) is not int or size <= 0 or type(count) is not int or count < 1:
+            issues.append(f"{name}: サイズ・店舗数が不正（アプリは店舗数 0 の項目があると manifest 全体を読まない）")
         if type(checked_at) is not int or checked_at <= 0 or checked_at > now + 3600:
             issues.append(f"{name}: checked_atが不正または未来")
         elif name in REFRESHED and now - checked_at > max_age_hours * 3600:

@@ -3,6 +3,11 @@ name: Refresh shop data
 # コードを変えても巡回はしない（公式サイトへの負荷とプロキシの通信を毎回使わない）。テストは data-safety.yml が走らせ、変更は翌朝の定期実行で使われる
 on:
   workflow_dispatch:
+    inputs:
+      crawl_all:
+        description: '全店を取り直す（締め切りまで、古い順に）'
+        type: boolean
+        default: false
   schedule:
     # Daily 04:10 JST (previous day 19:10 UTC)
     - cron: '10 19 * * *'
@@ -11,15 +16,22 @@ permissions:
   contents: write
   issues: write
 
+# 手で動かした実行が、進行中の定期実行を途中で消さない（消すと取得した分が何もコミットされない）
 concurrency:
   group: jankara-json-refresh
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 100
+    # 取得は CRAWL_DEADLINE（開始から 80 分）で打ち切り、残りの時間で必ず公開まで進む
+    timeout-minutes: 110
+    env:
+      CRAWL_ALL: ${{ inputs.crawl_all && '1' || '' }}
     steps:
+      - name: Set crawl deadline
+        run: echo "CRAWL_DEADLINE=$(( $(date +%s) + 80 * 60 ))" >> "$GITHUB_ENV"
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -36,6 +48,8 @@ jobs:
           python -m pip install "pillow>=10,<12" "numpy>=1.26,<3" "pytesseract>=0.3.13,<1"
 
       - name: Test parsers
+        env:
+          JANKARA_TESTING: '1'
         run: python -m unittest discover -s tests -p "test_*.py" -v
 
       # 公式サイトを読む手順だけがプロキシを通す（接続ごとに出口の IP が変わる）。
@@ -51,20 +65,24 @@ jobs:
 
       - name: Update shops
         id: chains
+        timeout-minutes: 75
         env:
           HTTP_PROXY: ${{ env.CRAWL_PROXY }}
           HTTPS_PROXY: ${{ env.CRAWL_PROXY }}
         continue-on-error: true
-        # 店の一覧は週 1 回（日曜、UTC）と手で動かしたときだけ取り直す。公式サイトへのリクエストを抑えるため
+        # 店の一覧は、最後に取り直せてから 6 日たったときと、手で動かしたときだけ取り直す。公式サイトへのリクエストを抑えるため。
+        # 曜日で決めると、定期実行の開始が遅れて日付をまたいだ週に抜ける
         run: |
-          if [ "$(date -u +%u)" = 7 ] || [ "${{ github.event_name }}" = workflow_dispatch ]; then
+          if [ "${{ github.event_name }}" = workflow_dispatch ] || python scripts/seen.py list-due chains 6; then
             python scripts/update.py chains
+            python scripts/seen.py list-done chains
           else
-            echo "店の一覧は日曜だけ取り直します"
+            echo "店の一覧は 6 日に 1 回だけ取り直します"
           fi
 
       - name: Update MegaBig shops and prices
         id: megabig
+        timeout-minutes: 75
         env:
           HTTP_PROXY: ${{ env.CRAWL_PROXY }}
           HTTPS_PROXY: ${{ env.CRAWL_PROXY }}
@@ -83,6 +101,7 @@ jobs:
 
       - name: Update Big Echo prices
         id: bigecho
+        timeout-minutes: 75
         env:
           HTTP_PROXY: ${{ env.CRAWL_PROXY }}
           HTTPS_PROXY: ${{ env.CRAWL_PROXY }}
@@ -91,6 +110,7 @@ jobs:
 
       - name: Update JOYSOUND prices
         id: joysound
+        timeout-minutes: 75
         env:
           HTTP_PROXY: ${{ env.CRAWL_PROXY }}
           HTTPS_PROXY: ${{ env.CRAWL_PROXY }}
@@ -99,6 +119,7 @@ jobs:
 
       - name: Update Maneki prices
         id: maneki
+        timeout-minutes: 75
         env:
           HTTP_PROXY: ${{ env.CRAWL_PROXY }}
           HTTPS_PROXY: ${{ env.CRAWL_PROXY }}
@@ -107,6 +128,7 @@ jobs:
 
       - name: Update JoyJoy minimum prices
         id: joyjoy
+        timeout-minutes: 75
         env:
           HTTP_PROXY: ${{ env.CRAWL_PROXY }}
           HTTPS_PROXY: ${{ env.CRAWL_PROXY }}
@@ -115,6 +137,7 @@ jobs:
 
       - name: Update Cote d'Azur prices
         id: cotedazur
+        timeout-minutes: 75
         env:
           HTTP_PROXY: ${{ env.CRAWL_PROXY }}
           HTTPS_PROXY: ${{ env.CRAWL_PROXY }}

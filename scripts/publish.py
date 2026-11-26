@@ -102,9 +102,15 @@ def without_stale(name: str, document: dict, state: dict, now: int) -> tuple[dic
 
 
 def publish_file(name: str, document: dict, old: dict | None, dist: Path = DIST, *, confirmed_at: int = 0,
-                 trust_count: bool = False) -> tuple[dict, bool]:
-    """新しい manifest の項目と、公開できたかどうかを返す。"""
+                 trust_count: bool = False) -> tuple[dict | None, bool]:
+    """新しい manifest の項目と、公開できたかどうかを返す。配る店が 0 なら項目は None（manifest に載せない）。"""
     count = len(document["shops"])
+    if count == 0 and (trust_count or not old):
+        # アプリは manifest に count 0 の項目があると manifest 全体を読まない。そのチェーンだけ載せずに
+        # ほかのチェーンを配る（アプリは manifest にないチェーンの金額を使わない）
+        (dist / f"{name}.json.xz").unlink(missing_ok=True)
+        print(f"{name}: 配れる店がないので manifest に載せません", flush=True)
+        return None, True
     if old and not trust_count and count < old["count"] * MIN_RATIO:
         print(f"::error::{name}: 店の数が異常です ({old['count']} -> {count})。前回のファイルを残します", flush=True)
         return old, False
@@ -140,7 +146,7 @@ def main() -> int:
     if "jankara" not in old and "prices" in old:
         old["jankara"] = old.pop("prices")
     # 公開済みチェーンのソースが統合競合で消えても、manifestを欠損公開しない。
-    unregistered = set(old) - set(SOURCES)
+    unregistered = set(old) - set(SOURCES)  # 0 店で載せなかった名前は SOURCES にあるので数えない
     if unregistered:
         print(f"::error::既配信の料金ソースがpublishから消失: {sorted(unregistered)}", flush=True)
         return 1
@@ -158,9 +164,14 @@ def main() -> int:
         document = json.loads(source.read_text(encoding="utf-8"))
         document, latest_seen = without_stale(name, document, state, confirmed_at)
         # 確認日時は、料金が変わらなくても最後に公式の表を確かめた日時まで進める（アプリが古さの表示に使う）
-        files[name], ok = publish_file(name, document, old.get(name),
-                                       confirmed_at=max(latest_seen, confirmed_at if name in confirmed else 0),
-                                       trust_count=trust_count)
+        entry, ok = publish_file(name, document, old.get(name),
+                                 confirmed_at=max(latest_seen, confirmed_at if name in confirmed else 0),
+                                 trust_count=trust_count)
+        if entry is not None:
+            files[name] = entry
+        elif name in ("chains", "jankara"):
+            print(f"::error::{name}: 店がありません", flush=True)
+            published = False
         published = published and ok
     manifest = {"schema_version": MANIFEST_VERSION, "files": files}
     path.write_text(json.dumps(manifest, separators=(",", ":"), sort_keys=True), encoding="utf-8", newline="")

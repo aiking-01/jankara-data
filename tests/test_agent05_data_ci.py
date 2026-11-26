@@ -22,7 +22,7 @@ NOW = 1_800_000_000
 
 def sample_dist(path: Path, checked_at: int = NOW) -> None:
     files = {}
-    for name in monitor.REQUIRED:
+    for name in monitor.REQUIRED + ("bigecho", "maneki", "kan"):
         data = lzma.compress(b'{"schema_version":1,"shops":[{"id":1}]}')
         (path / f"{name}.json.xz").write_bytes(data)
         files[name] = {
@@ -70,6 +70,7 @@ class ManifestMonitorTests(unittest.TestCase):
 
     def test_all_published_optional_files_are_monitored(self):
         for name in monitor.OPTIONAL:
+            (self.path / f"{name}.json.xz").unlink(missing_ok=True)
             path = self.path / "manifest.json"
             manifest = json.loads(path.read_text())
             payload = lzma.compress(b'{"schema_version":1,"shops":[{"id":1}]}')
@@ -153,6 +154,21 @@ class ManifestMonitorTests(unittest.TestCase):
         path.write_text(json.dumps(document))
         self.assertTrue(any("安全に展開できません" in issue
                             for issue in monitor.inspect(self.path, NOW)))
+
+    def test_price_file_left_out_when_no_shop_can_be_served(self):
+        # publish.py は配れる店がないチェーンを manifest に載せない。載っていなければ異常ではない
+        path = self.path / "manifest.json"
+        data = json.loads(path.read_text())
+        del data["files"]["bigecho"]
+        path.write_text(json.dumps(data))
+        self.assertEqual(monitor.inspect(self.path, NOW), [])
+
+    def test_zero_count_entry_is_rejected_because_the_app_refuses_the_manifest(self):
+        path = self.path / "manifest.json"
+        data = json.loads(path.read_text())
+        data["files"]["maneki"]["count"] = 0
+        path.write_text(json.dumps(data))
+        self.assertTrue(any("maneki" in x and "店舗数" in x for x in monitor.inspect(self.path, NOW)))
 
     def test_corrupted_xz_is_rejected(self):
         (self.path / "maneki.json.xz").write_bytes(b"broken")

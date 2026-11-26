@@ -65,6 +65,11 @@ REPAIR = False
 WARNINGS: list[str] = []
 # issues と同じ順に、どの元データの異常か（RAW の名前）を持つ
 ISSUE_SOURCES: list[str] = []
+# 修復で外した店（元データの名前 → ID）。店数の減少の判定では、外す前の店数で比べる
+REPAIRED: dict[str, set] = {}
+# 修復で外した店の、最後に検査を通った記録。翌日その店が戻ってきたら、新しい店として素通しせずにこれと比べる
+QUARANTINE_FILE = "source/quarantine.json"
+QUARANTINE: dict[str, dict] = {}
 SOURCE_OF_BUILD = {"chains": "chains", "jankara": "prices", "bigecho": "chain_prices", "maneki": "maneki_prices",
                    "megabig": "megabig_prices", "kan": "ocr", "joyjoy": "joyjoy_prices",
                    "joysound": "joysound_prices", "cotedazur": "cotedazur_prices", "banban": "banban_prices",
@@ -113,7 +118,7 @@ def _records(doc: dict, name: str, *, allow_empty: bool = False) -> dict:
             if key in found:
                 raise DataRejected(f"{name}: 店舗 ID 重複 {key}")
             found[key] = item
-    if not found and not allow_empty and name not in ("cotedazur_prices", "cotedazur", "megabig_prices", "megabig"):
+    if not found and not allow_empty and name in ("chains", "prices", "jankara"):
         raise DataRejected(f"{name}: データが空です")
     return found
 
@@ -669,17 +674,19 @@ def _joyjoy(item, old, key, issues, *, require_checked_at=False):
 
 def _validate_doc(name, current, previous, issues, *, allow_empty_old=False, built=False):
     # 配る側（build）は、変換が読まない店や長く確かめていない店を外すので空になってよい
-    fresh = _records(current, name, allow_empty=built)
+    fresh = _records(current, name, allow_empty=built or name not in ("chains", "prices"))
     old = _records(previous, name, allow_empty=built or allow_empty_old or name in ("megabig_prices", "megabig", "cotedazur_prices", "cotedazur"))
-    old_count, fresh_count = len(old), len(fresh)
+    old_count, fresh_count = len(old), len(fresh) + len(REPAIRED.get(name, ()))
+    held = QUARANTINE.get(name, {}) if not built else {}
     # 取得の失敗は元データの店数で止める。配る側の減少は変換が読まなくなった店なので、修復では止めない
     if REPAIR and built:
         pass
-    elif not allow_empty_old and fresh_count < old_count * (0.95 if name != "ocr" else 0.90):
+    elif not allow_empty_old and fresh_count < old_count * (0.95 if name != "ocr" else 0.90) and old_count - fresh_count > 2:
         issues.append(f"{name}: 店舗数が異常に減少 ({old_count} → {fresh_count})")
     if old_count and not allow_empty_old and fresh_count > old_count * 1.25 + 10:
         issues.append(f"{name}: 店舗数が異常に増加 ({old_count} → {fresh_count})")
-    changed = [key for key, value in fresh.items() if _meaning(value) != _meaning(old.get(key))]
+    changed = [key for key, value in fresh.items()
+               if _meaning(value) != _meaning(old.get(key) if key in old else held.get(key))]
     if old_count > 50 and len(changed) > max(20, old_count * 0.35):
         # 年末の料金や月ごとの PDF の差し替えで全店が変わることがある。修復では店ごとの検査に任せる。
         # 比べる相手は最後に公開できたデータなので、止め続けると差は広がる一方になる
@@ -697,7 +704,7 @@ def _validate_doc(name, current, previous, issues, *, allow_empty_old=False, bui
             if before[group] and after[group] > before[group] * 1.22 + 5:
                 issues.append(f"{name}: {group} の店舗数が異常増加")
     for key in changed:
-        item, was = fresh[key], old.get(key)
+        item, was = fresh[key], (old.get(key) if key in old else held.get(key))
         if name == "chains":
             _location(item, key, issues, chain=True)
             if item.get("id") != key:
@@ -874,6 +881,8 @@ def repair(reference: str, issues: list[str]) -> list[str]:
         file = RAW[source]
         doc = _json_bytes((ROOT / file).read_bytes(), file)
         key = _issue_key(issue, source, _records(doc, source, allow_empty=True))
+        if key is None and _issue_key(issue, source, dict.fromkeys(REPAIRED.get(source, ()))) is not None:
+            continue  # 前の回で外した店の、変換し直す前の配信側の異常
         if key is None:
             reverts.add(source)
         else:
@@ -897,6 +906,13 @@ def repair(reference: str, issues: list[str]) -> list[str]:
         else:
             doc["shops"] = [item for item in doc["shops"] if str(item.get("id")) not in keys]
         _write_doc(path, doc, original)
+        REPAIRED.setdefault(source, set()).update(keys)
+        # 最後に検査を通った記録を残す。翌日戻ってきた店は、これと比べてから配る
+        if not _missing_at_reference(reference, RAW[source]):
+            good = _records(_json_bytes(_old_bytes(reference, RAW[source]), RAW[source]), source, allow_empty=True)
+            for key in keys:
+                if key in good and key not in QUARANTINE.get(source, {}):
+                    QUARANTINE.setdefault(source, {})[key] = good[key]
         block = state["files"].get(RAW[source])
         if block is not None:
             for key in keys:
@@ -905,6 +921,35 @@ def repair(reference: str, issues: list[str]) -> list[str]:
     if state["files"]:
         seen_state.save(state)
     return actions
+
+
+def load_quarantine() -> None:
+    QUARANTINE.clear()
+    path = ROOT / QUARANTINE_FILE
+    if path.exists():
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+            QUARANTINE.update({k: v for k, v in doc.get("sources", {}).items() if isinstance(v, dict)})
+        except ValueError:
+            pass
+
+
+def save_quarantine() -> None:
+    """検査を通って配られた店は隔離から外す。外したまま戻ってこない店の記録は残す"""
+    for source in list(QUARANTINE):
+        if source not in RAW:
+            QUARANTINE.pop(source)
+            continue
+        current = _records(_json_bytes((ROOT / RAW[source]).read_bytes(), RAW[source]), source, allow_empty=True)
+        for key in [key for key in QUARANTINE[source] if key in current]:
+            QUARANTINE[source].pop(key)
+        if not QUARANTINE[source]:
+            QUARANTINE.pop(source)
+    path = ROOT / QUARANTINE_FILE
+    if QUARANTINE or path.exists():
+        payload = json.dumps({"schema_version": 1, "sources": QUARANTINE}, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+        if not path.exists() or path.read_text(encoding="utf-8") != payload:
+            path.write_text(payload, encoding="utf-8", newline="")
 
 
 def main() -> int:
@@ -916,17 +961,23 @@ def main() -> int:
     args = parser.parse_args()
     global REPAIR
     REPAIR = args.repair
+    load_quarantine()
     try:
         issues, summary = run_validation(args.baseline, args.stage)
-        # 修復は 2 回まで。修復した後の元データが検査を通らなければ、今までどおり何も公開しない
-        for _ in range(2):
+        # 修復は 4 回まで。外した店が配信側に残らないよう、full では修復のたびに変換し直してから検査する。
+        # 修復した後の元データが検査を通らなければ、今までどおり何も公開しない
+        for _ in range(4):
             if not (args.repair and issues):
                 break
             for issue in issues[:MAX_ISSUES]:
                 print(f"::warning::{issue}", flush=True)
             for action in repair(args.baseline, issues):
                 print(f"::warning::{action}", flush=True)
+            if args.stage == "full":
+                subprocess.run(["node", "scripts/convert.mjs"], cwd=ROOT, check=True)
             issues, summary = run_validation(args.baseline, args.stage)
+        if args.repair and not issues:
+            save_quarantine()
     except (DataRejected, OSError) as error:
         print(f"::error::データ検査を実行できません: {error}", file=sys.stderr)
         return 1

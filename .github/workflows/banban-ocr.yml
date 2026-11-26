@@ -67,7 +67,7 @@ jobs:
       - name: OCR smoke tests (real Tesseract)
         run: |
           tesseract --version
-          python -m unittest discover -s tests -p 'banban_ocr_ci.py' -v
+          JANKARA_TESTING=1 python -m unittest discover -s tests -p 'banban_ocr_ci.py' -v
           python scripts/extract_banban.py --help
 
   extract-and-publish:
